@@ -1,0 +1,35 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="GodotFab"
+run/main_scene="uid://c3yer5pxswp8j"
+config/features=PackedStringArray("4.8", "Forward Plus")
+config/icon="res://icon.svg"
+
+[dotnet]
+
+project/assembly_name="GodotFab"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godotfab/plugin.cfg")
+
+[rendering]
+
+lights_and_shadows/use_physical_light_units=true
+global_illumination/voxel_gi/quality=1
+textures/default_filters/anisotropic_filtering_level=4
+camera/depth_of_field/depth_of_field_bokeh_quality=2
+anti_aliasing/quality/use_debanding=true
+environment/subsurface_scattering/subsurface_scattering_quality=2
+anti_aliasing/quality/screen_space_aa=2
+anti_aliasing/quality/use_taa=true

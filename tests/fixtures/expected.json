@@ -1,0 +1,92 @@
+{
+ "build_version": "1.0.0",
+ "feature_level": {
+  "v20": 20,
+  "v22": 22,
+  "json": 20
+ },
+ "chunks": {
+  "11111111222222223333333344444444": {
+   "guid": [
+    286331153,
+    572662306,
+    858993459,
+    1145324612
+   ],
+   "hash_hex": "0123456789ABCDEF",
+   "group": 7,
+   "secret_v22": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "path_v20": "ChunksV4/07/0123456789ABCDEF_11111111222222223333333344444444.chunk",
+   "path_v22": "ChunksV5/AQAAAAIAAAADAAAABAAAAA/07/782riWdFIwE_ERERESIiIiIzMzMzRERERA.chunk",
+   "payload_size": 3000,
+   "payload_sha1_hex": "35dec3b005d8cfd386040d15ec782283a0b64fce"
+  },
+  "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD": {
+   "guid": [
+    2863311530,
+    3149642683,
+    3435973836,
+    3722304989
+   ],
+   "hash_hex": "FEDCBA9876543210",
+   "group": 99,
+   "secret_v22": null,
+   "path_v20": "ChunksV4/99/FEDCBA9876543210_AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD.chunk",
+   "path_v22": "ChunksV5/plain/99/EDJUdpi63P4_qqqqqru7u7vMzMzM3d3d3Q.chunk",
+   "payload_size": 5000,
+   "payload_sha1_hex": "e83990f0e47484bebc5c7f8a04015711b58a7420"
+  }
+ },
+ "files": [
+  {
+   "filename": "Content/Pack/Meshes/A.uasset",
+   "size": 3500,
+   "sha1_hex": "be193fa2ecf1048e62492e83762ad1ef2a52ef41",
+   "parts": [
+    {
+     "guid": "11111111222222223333333344444444",
+     "offset": 100,
+     "size": 2000
+    },
+    {
+     "guid": "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD",
+     "offset": 0,
+     "size": 1500
+    }
+   ]
+  },
+  {
+   "filename": "Content/Pack/Maps/Overview.umap",
+   "size": 3500,
+   "sha1_hex": "3a04962e3fbda6ace74f7a38aab5a51b141090af",
+   "parts": [
+    {
+     "guid": "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD",
+     "offset": 1500,
+     "size": 3500
+    }
+   ]
+  }
+ ],
+ "chunk_compressed": {
+  "guid": "11111111222222223333333344444444",
+  "payload_size": 3000,
+  "payload_sha1_hex": "35dec3b005d8cfd386040d15ec782283a0b64fce"
+ },
+ "chunk_plain": {
+  "guid": "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD",
+  "payload_size": 5000,
+  "payload_sha1_hex": "e83990f0e47484bebc5c7f8a04015711b58a7420"
+ },
+ "chunk_paths_by_level": {
+  "2": "Chunks/07/0123456789ABCDEF_11111111222222223333333344444444.chunk",
+  "5": "ChunksV2/07/0123456789ABCDEF_11111111222222223333333344444444.chunk",
+  "14": "ChunksV3/07/0123456789ABCDEF_11111111222222223333333344444444.chunk",
+  "18": "ChunksV4/07/0123456789ABCDEF_11111111222222223333333344444444.chunk"
+ }
+}

@@ -1,0 +1,59 @@
+{
+ "ManifestFileVersion": "020000000000",
+ "bIsFileData": false,
+ "AppID": "000000000000",
+ "AppNameString": "FabPack",
+ "BuildVersionString": "1.0.0",
+ "LaunchExeString": "",
+ "LaunchCommand": "",
+ "PrereqIds": [],
+ "PrereqName": "",
+ "PrereqPath": "",
+ "PrereqArgs": "",
+ "FileManifestList": [
+  {
+   "Filename": "Content/Pack/Meshes/A.uasset",
+   "FileHash": "190025063162236241004142098073046131118042209239042082239065",
+   "FileChunkParts": [
+    {
+     "Guid": "11111111222222223333333344444444",
+     "Offset": "100000000000",
+     "Size": "208007000000"
+    },
+    {
+     "Guid": "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD",
+     "Offset": "000000000000",
+     "Size": "220005000000"
+    }
+   ]
+  },
+  {
+   "Filename": "Content/Pack/Maps/Overview.umap",
+   "FileHash": "058004150046063189166172231079122056170181165027020016144175",
+   "FileChunkParts": [
+    {
+     "Guid": "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD",
+     "Offset": "220005000000",
+     "Size": "172013000000"
+    }
+   ]
+  }
+ ],
+ "ChunkHashList": {
+  "11111111222222223333333344444444": "239205171137103069035001",
+  "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD": "016050084118152186220254"
+ },
+ "ChunkShaList": {
+  "11111111222222223333333344444444": "35DEC3B005D8CFD386040D15EC782283A0B64FCE",
+  "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD": "E83990F0E47484BEBC5C7F8A04015711B58A7420"
+ },
+ "DataGroupList": {
+  "11111111222222223333333344444444": "007",
+  "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD": "099"
+ },
+ "ChunkFilesizeList": {
+  "11111111222222223333333344444444": "184011000000000000000000",
+  "AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD": "136019000000000000000000"
+ },
+ "CustomFields": {}
+}
