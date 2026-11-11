@@ -60,6 +60,36 @@ func test_install_pack_backs_up_existing() -> void:
 	assert_false(FileAccess.file_exists(backups.path_join(stamp).path_join("Pack/Meshes/user.uasset")), "user file not backed up")
 
 
+func test_install_pack_keeps_identical_files() -> void:
+	var files_dir := tmp_dir()
+	var project_dir := tmp_dir()
+	_make_pack(files_dir)
+	write_file(project_dir.path_join("X.uproject"), "{}")
+	# Installed by an earlier download: same bytes, nothing to back up.
+	write_file(project_dir.path_join("Content/Pack/Meshes/a.uasset"), "new-a")
+	write_file(project_dir.path_join("Content/Pack/Maps/Overview.umap"), "old")
+	var result := UnrealBridge.install_pack(files_dir, project_dir)
+	assert_true(result.ok, "install ok")
+	assert_eq(result.unchanged, 1, "identical file left as is")
+	assert_eq(result.backed_up, 1, "only the changed file backed up")
+	assert_eq(FileAccess.get_file_as_string(project_dir.path_join("Content/Pack/Maps/Overview.umap")), "map", "changed file replaced")
+	assert_eq(result.content_folders, ["Pack"], "folder still reported")
+	assert_eq(result.maps, ["/Game/Pack/Maps/Overview"], "map still reported")
+	assert_false(FileAccess.file_exists(files_dir.path_join("Content/Pack/Meshes/a.uasset")), "download consumed")
+
+
+func test_same_content() -> void:
+	var dir := tmp_dir()
+	write_file(dir.path_join("a"), "abc")
+	write_file(dir.path_join("b"), "abc")
+	write_file(dir.path_join("c"), "abd")
+	write_file(dir.path_join("d"), "abcd")
+	assert_true(UnrealBridge.same_content(dir.path_join("a"), dir.path_join("b")))
+	assert_false(UnrealBridge.same_content(dir.path_join("a"), dir.path_join("c")), "different bytes")
+	assert_false(UnrealBridge.same_content(dir.path_join("a"), dir.path_join("d")), "different size")
+	assert_false(UnrealBridge.same_content(dir.path_join("a"), dir.path_join("missing")), "missing file")
+
+
 func test_install_pack_custom_backup_root() -> void:
 	var files_dir := tmp_dir()
 	var project_dir := tmp_dir()
@@ -309,3 +339,14 @@ func test_run_commandlet_finished_with_nonzero_exit_is_ok() -> void:
 		"echo 'LogTemp: Error: GodotFab: export failed: no meshes' >> '%s'; echo 'GodotFab: export finished' >> '%s'; exit 0" % [log_path, log_path]]), log_path, Callable())
 	assert_false(result2.ok, "a failed line beats a finished line")
 	assert_contains(result2.error, "no meshes")
+
+
+func test_pack_installed() -> void:
+	var project := tmp_dir()
+	write_file(project.path_join("X.uproject"), "{}")
+	write_file(project.path_join("Content/Pack/Maps/Overview.umap"), "map")
+	DirAccess.make_dir_recursive_absolute(project.path_join("Content/__ExternalActors__"))
+	assert_true(UnrealBridge.pack_installed(project.path_join("X.uproject"), ["Pack", "__ExternalActors__"]))
+	assert_false(UnrealBridge.pack_installed(project.path_join("X.uproject"), ["Pack", "Other"]), "one folder missing")
+	assert_false(UnrealBridge.pack_installed(project.path_join("X.uproject"), []), "nothing to convert")
+	assert_false(UnrealBridge.pack_installed("", ["Pack"]), "no Unreal project")

@@ -20,6 +20,9 @@ const EXPORT_TEXTURES := "godotfab/export/export_textures"
 const EXPORT_PHYSICS := "godotfab/export/export_physics"
 const EXPORT_SCENE := "godotfab/export/scene"
 const PARALLEL_CHUNKS := "godotfab/downloads/parallel_chunks"
+## Keeps the downloaded chunks after an import, so downloading the asset again
+## (to convert it with other options, or after fixing the exporter) needs no network.
+const KEEP_DOWNLOADS := "godotfab/downloads/keep_downloaded_files"
 const LOG_LEVEL := "godotfab/client/log_level"
 
 ## [value, label] pairs for option buttons.
@@ -41,6 +44,7 @@ const KEYS := {
 	EXPORT_PHYSICS: {"default": true},
 	EXPORT_SCENE: {"default": "auto", "hint": PROPERTY_HINT_ENUM, "hint_string": "auto,meshes"},
 	PARALLEL_CHUNKS: {"default": 4, "hint": PROPERTY_HINT_RANGE, "hint_string": "1,8,1", "editor": true},
+	KEEP_DOWNLOADS: {"default": true, "editor": true},
 	LOG_LEVEL: {"default": Log.Level.INFO, "hint": PROPERTY_HINT_ENUM, "hint_string": "ERROR,WARNING,INFO,VERBOSE,DEBUG", "editor": true},
 }
 

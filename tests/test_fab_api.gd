@@ -204,6 +204,29 @@ func test_manifest_pointers_pairs_sources() -> void:
 	assert_eq(FakeFetch.header(req, "Authorization"), "Bearer tok")
 
 
+func test_pair_sources_without_matching_base_uses_manifest_folder() -> void:
+	var info := {
+		"distributionPointBaseUrls": ["https://other.example/Builds/x/CloudDir"],
+		"distributionPoints": [
+			{"manifestUrl": "https://cdn-a.example/Builds/x/CloudDir/m.manifest?sig=1"},
+			{"manifestUrl": ""},
+		],
+	}
+	assert_eq(FabApi.pair_sources(info), [{"manifest_url": "https://cdn-a.example/Builds/x/CloudDir/m.manifest?sig=1", "base_url": "https://cdn-a.example/Builds/x/CloudDir"}])
+	info.erase("distributionPointBaseUrls")
+	assert_eq(FabApi.pair_sources(info).size(), 1)
+
+
+func test_file_download_info_direct_url() -> void:
+	var pair := _api()
+	var api = pair[0]
+	pair[1].add("download-info", {"json": {"downloadInfo": [{"assetFormat": "fbx", "downloadUrl": "https://cdn.example/f.zip?sig=1", "expires": "x", "type": "file"}]}})
+	var result = await api.file_download_info("uid1", "fbx", "f1")
+	assert_true(result.ok, result.get("error", ""))
+	assert_eq(result.download_url, "https://cdn.example/f.zip?sig=1")
+	assert_eq(result.sources, [])
+
+
 func test_manifest_pointers_403_message() -> void:
 	var pair := _api()
 	var api = pair[0]

@@ -11,12 +11,14 @@ const EpicAuth = preload("res://addons/godotfab/epic_auth.gd")
 const FabApi = preload("res://addons/godotfab/fab_api.gd")
 const Jobs = preload("res://addons/godotfab/jobs.gd")
 const Gallery = preload("res://addons/godotfab/ui/gallery.gd")
+const FbxPostImport = preload("res://addons/godotfab/fbx_post_import.gd")
 
 var http: Http
 var auth: EpicAuth
 var api: FabApi
 var jobs: Jobs
 var gallery: Control
+var fbx_post_import: EditorScenePostImportPlugin
 
 
 func _enter_tree() -> void:
@@ -38,6 +40,8 @@ func _enter_tree() -> void:
 	add_child(jobs)
 	_init_gallery()
 	ProjectSettings.settings_changed.connect(on_settings_changed)
+	fbx_post_import = FbxPostImport.new()
+	add_scene_post_import_plugin(fbx_post_import)
 	EditorInterface.get_editor_settings().settings_changed.connect(on_settings_changed)
 	Log.info("Download path: %s" % Settings.download_dir_abs())
 	if OS.get_environment("GODOTFAB_SMOKE") == "1":
@@ -47,6 +51,9 @@ func _enter_tree() -> void:
 
 
 func _exit_tree() -> void:
+	if fbx_post_import:
+		remove_scene_post_import_plugin(fbx_post_import)
+		fbx_post_import = null
 	ProjectSettings.settings_changed.disconnect(on_settings_changed)
 	EditorInterface.get_editor_settings().settings_changed.disconnect(on_settings_changed)
 	if gallery:

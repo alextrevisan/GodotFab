@@ -32,11 +32,13 @@ var _cancelled: bool = false
 ## Moves every file under `<files_dir>/Content/` into `<project>/Content/`,
 ## merging with what is there. Existing target files are moved first to
 ## `backup_root` (default `<project>/Saved/GodotFabBackups/<YYYYmmdd-HHMMSS>`)
-## keeping their path relative to Content. Files outside Content (manifest.json)
+## keeping their path relative to Content; target files identical to the
+## downloaded ones stay as they are (downloading a pack again that is still
+## installed backs nothing up). Files outside Content (manifest.json)
 ## are ignored. `uproject` is the .uproject file or the project directory.
-## Returns {ok, error, content_folders: Array[String], maps: Array[String], backed_up: int}.
-static func install_pack(files_dir: String, uproject: String, backup_root := "") -> Dictionary:
-	var result := {"ok": false, "error": "", "content_folders": [] as Array[String], "maps": [] as Array[String], "backed_up": 0}
+## Returns {ok, error, content_folders: Array[String], maps: Array[String], backed_up: int, unchanged: int}.
+static func install_pack(files_dir: String, uproject: String, backup_root := "", progress := Callable()) -> Dictionary:
+	var result := {"ok": false, "error": "", "content_folders": [] as Array[String], "maps": [] as Array[String], "backed_up": 0, "unchanged": 0}
 	var project_dir := project_dir_of(uproject)
 	if project_dir.is_empty() or not DirAccess.dir_exists_absolute(project_dir):
 		result.error = "Unreal project not found: %s" % uproject
@@ -52,20 +54,27 @@ static func install_pack(files_dir: String, uproject: String, backup_root := "")
 	_list_files(source_root, "", relative_files)
 	var folders := {}
 	var maps: Array[String] = []
-	for rel in relative_files:
+	for i in relative_files.size():
+		var rel := relative_files[i]
+		if progress.is_valid() and i % 20 == 0:
+			progress.call(i, relative_files.size(), "Installing into the Unreal project")
 		var source := source_root.path_join(rel)
 		var target := target_root.path_join(rel)
-		if FileAccess.file_exists(target):
-			var backup := backup_root.path_join(rel)
-			var err := _move_file(target, backup)
+		if FileAccess.file_exists(target) and same_content(source, target):
+			DirAccess.remove_absolute(source)
+			result.unchanged += 1
+		else:
+			if FileAccess.file_exists(target):
+				var backup := backup_root.path_join(rel)
+				var err := _move_file(target, backup)
+				if err != OK:
+					result.error = "Cannot back up %s to %s (%s)" % [target, backup, error_string(err)]
+					return result
+				result.backed_up += 1
+			var err := _move_file(source, target)
 			if err != OK:
-				result.error = "Cannot back up %s to %s (%s)" % [target, backup, error_string(err)]
+				result.error = "Cannot move %s to %s (%s)" % [source, target, error_string(err)]
 				return result
-			result.backed_up += 1
-		var err := _move_file(source, target)
-		if err != OK:
-			result.error = "Cannot move %s to %s (%s)" % [source, target, error_string(err)]
-			return result
 		if rel.contains("/") and not rel.get_slice("/", 0).begins_with("__External"):
 			folders[rel.get_slice("/", 0)] = true
 		if rel.get_extension().to_lower() == "umap":
@@ -77,8 +86,21 @@ static func install_pack(files_dir: String, uproject: String, backup_root := "")
 	result.content_folders = content_folders
 	result.maps = order_maps(maps, target_root)
 	result.ok = true
-	Log.info("Installed %d files into %s (%d backed up to %s)" % [relative_files.size(), target_root, result.backed_up, backup_root if result.backed_up > 0 else "-"])
+	Log.info("Installed %d files into %s (%d already there, %d backed up to %s)" % [relative_files.size(), target_root, result.unchanged, result.backed_up, backup_root if result.backed_up > 0 else "-"])
 	return result
+
+
+## True when both files have the same size and bytes.
+static func same_content(a: String, b: String) -> bool:
+	var fa := FileAccess.open(a, FileAccess.READ)
+	var fb := FileAccess.open(b, FileAccess.READ)
+	if fa == null or fb == null or fa.get_length() != fb.get_length():
+		return false
+	const BLOCK := 1 << 20
+	while fa.get_position() < fa.get_length():
+		if fa.get_buffer(BLOCK) != fb.get_buffer(BLOCK):
+			return false
+	return true
 
 
 ## Maps sorted by how much they hold, heaviest first (ties by path): the .umap
@@ -121,6 +143,19 @@ static func content_paths(content_folders: Array) -> String:
 	for folder in content_folders:
 		paths.append("/Game/" + str(folder))
 	return ",".join(paths)
+
+
+## True when every folder of a pack ([param content_folders], as recorded at
+## install time) is still in the Unreal project's Content, so it can be
+## converted again without downloading it.
+static func pack_installed(uproject: String, content_folders: Array) -> bool:
+	var project_dir := project_dir_of(uproject)
+	if project_dir.is_empty() or content_folders.is_empty():
+		return false
+	for folder in content_folders:
+		if not DirAccess.dir_exists_absolute(project_dir.path_join("Content").path_join(str(folder))):
+			return false
+	return true
 
 
 ## Directory of a project given its .uproject file or the directory itself.

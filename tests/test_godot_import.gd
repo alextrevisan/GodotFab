@@ -203,6 +203,43 @@ func test_import_direct_copies_models_and_textures() -> void:
 	assert_eq(meta.get("format"), "gltf")
 
 
+func test_extract_and_import_direct_report_progress() -> void:
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	_make_zip(files.path_join("source.zip"), {"Chair/model.glb": "glb", "Chair/a.png": "png"})
+	var reports: Array = []
+	var report := func(done: int, total: int, label: String): reports.append([done, total, label])
+	assert_true(GodotImport.extract_zips(files, report).ok)
+	assert_eq(reports[0], [0, reports.size(), "Extracting source.zip"], "one report per entry (the zip may list folders too)")
+	assert_eq(reports.back()[0], reports.size() - 1)
+	reports.clear()
+	var res := GodotImport.import_direct(files, "res://fab_assets/chair", {}, root.path_join("fab_assets/chair"), [], report)
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(reports, [[1, 0, "Copying a.png"], [2, 0, "Copying model.glb"]])
+
+
+func test_import_direct_merges_additional_files_next_to_the_model() -> void:
+	# Fab's FBX format holds only the .fbx; its textures come as additional-files'
+	# textures.zip, whose layout (Textures/Textures/...) is what the FBX references.
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	write_file(files.path_join("survival.fbx"), "fbx")
+	var extras := root.path_join("extras")
+	write_file(extras.path_join("textures_extracted/Textures/Textures/Jacket/Jacket_BaseColor.jpg"), "jpg")
+	write_file(extras.path_join("textures_extracted/Textures/notes.txt"), "skip me")
+	write_file(extras.path_join("loose.png"), "png")
+	write_file(extras.path_join("Other/b.png"), "png")
+	var target := root.path_join("fab_assets/survival")
+	var res := GodotImport.import_direct(files, "res://fab_assets/survival", {}, target, [extras])
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(res.scene, "res://fab_assets/survival/survival.fbx")
+	assert_eq(FileAccess.get_file_as_string(target.path_join("Textures/Textures/Jacket/Jacket_BaseColor.jpg")), "jpg")
+	assert_true(FileAccess.file_exists(target.path_join("loose.png")))
+	assert_true(FileAccess.file_exists(target.path_join("Other/b.png")))
+	assert_false(FileAccess.file_exists(target.path_join("Textures/notes.txt")), "non-asset skipped")
+	assert_false(DirAccess.dir_exists_absolute(target.path_join("textures_extracted")), "zip folder merged")
+
+
 func test_import_direct_prefers_glb_and_falls_back_to_root() -> void:
 	var root := tmp_dir()
 	var files := root.path_join("files")
@@ -239,3 +276,77 @@ func test_import_export_uses_done_file_scene() -> void:
 	assert_true(result.ok, result.get("error", ""))
 	assert_eq(result.scene, "res://fab_assets/pack/VOL2_Laundry.tscn")
 	assert_false(FileAccess.file_exists(target.path_join("godotfab_done.txt")), "done file not copied")
+
+
+# Reimports sync the target instead of replacing it: unchanged files (same
+# size and MD5) are not touched, so Godot keeps their imported cache.
+const GODOT_REWRITTEN_IMPORT := "dest_files=[\"res://.godot/imported/A.glb-abc.scn\"]\nnodes/root_scale=1.0\n"
+
+
+func test_reimport_keeps_unchanged_files() -> void:
+	var root := tmp_dir()
+	var export_dir := root.path_join("export")
+	_make_export(export_dir)
+	var target := root.path_join("fab_assets/p")
+	var first := GodotImport.import_export(export_dir, "res://fab_assets/p", {"uid": "u1"}, target)
+	assert_true(first.ok, first.get("error", ""))
+	assert_eq(first.unchanged, 0)
+	# Godot rewrites the .import after importing (cache paths, every parameter).
+	var imp_path := target.path_join("Pack/Meshes/A.glb.import")
+	write_file(imp_path, FileAccess.get_file_as_string(imp_path) + GODOT_REWRITTEN_IMPORT)
+	write_file(target.path_join("Prefabs/A.tscn.uid"), "uid://generated")
+	var second := GodotImport.import_export(export_dir, "res://fab_assets/p", {"uid": "u1"}, target)
+	assert_true(second.ok, second.get("error", ""))
+	assert_eq(second.updated, 0, "nothing changed in the export")
+	assert_eq(second.removed, 0)
+	assert_true(second.unchanged > 5)
+	assert_contains(FileAccess.get_file_as_string(imp_path), GODOT_REWRITTEN_IMPORT, "Godot's .import kept for an unchanged asset")
+	assert_true(FileAccess.file_exists(target.path_join("Prefabs/A.tscn.uid")), "Godot's .uid of a kept file stays")
+	assert_false(DirAccess.dir_exists_absolute(target + ".godotfab-new"), "build folder removed")
+
+
+func test_reimport_updates_changed_and_removes_missing() -> void:
+	var root := tmp_dir()
+	var export_dir := root.path_join("export")
+	_make_export(export_dir)
+	write_file(export_dir.path_join("Pack/Old.tres"), '[gd_resource type="Resource" format=3]\n')
+	var target := root.path_join("fab_assets/p")
+	assert_true(GodotImport.import_export(export_dir, "res://fab_assets/p", {"uid": "u1"}, target).ok)
+	var imp_path := target.path_join("Pack/Meshes/A.glb.import")
+	write_file(imp_path, FileAccess.get_file_as_string(imp_path) + GODOT_REWRITTEN_IMPORT)
+	write_file(target.path_join("Pack/Old.tres.uid"), "uid://orphan")
+	write_file(export_dir.path_join("Pack/Meshes/A.glb"), PackedByteArray([9, 9, 9]))
+	DirAccess.remove_absolute(export_dir.path_join("Pack/Old.tres"))
+	var res := GodotImport.import_export(export_dir, "res://fab_assets/p", {"uid": "u1"}, target)
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(FileAccess.get_file_as_bytes(target.path_join("Pack/Meshes/A.glb")), PackedByteArray([9, 9, 9]), "changed asset replaced")
+	assert_false(FileAccess.get_file_as_string(imp_path).contains("dest_files"), "its .import replaced too, so Godot reimports it")
+	assert_false(FileAccess.file_exists(target.path_join("Pack/Old.tres")), "file gone from the export removed")
+	assert_false(FileAccess.file_exists(target.path_join("Pack/Old.tres.uid")), "and its .uid")
+	assert_eq(res.removed, 2)
+	assert_eq(res.updated, 2)
+	assert_true(FileAccess.file_exists(target.path_join(".godotfab.json")), "manifest kept")
+
+
+func test_forget_import_cache() -> void:
+	var res := "res://godotfab_test_forget/Tex.png"
+	var md5 := ProjectSettings.globalize_path("res://.godot/imported/Tex.png-%s.md5" % res.md5_text())
+	write_file(md5, "source_md5=\"x\"\n")
+	assert_true(GodotImport.forget_import_cache(ProjectSettings.globalize_path(res)), "the md5 of that res path is deleted")
+	assert_false(FileAccess.file_exists(md5))
+	assert_false(GodotImport.forget_import_cache(ProjectSettings.globalize_path(res)), "nothing left to delete")
+	assert_false(GodotImport.forget_import_cache("/nowhere/outside/Tex.png"), "paths outside the project are ignored")
+
+
+func test_import_export_consume_moves_binaries() -> void:
+	var root := tmp_dir()
+	var export_dir := root.path_join("export")
+	_make_export(export_dir)
+	var target := root.path_join("fab_assets/p")
+	var res := GodotImport.import_export(export_dir, "res://fab_assets/p", {"uid": "u1"}, target, true)
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(FileAccess.get_file_as_bytes(target.path_join("Pack/Meshes/A.glb")), PackedByteArray([0x67, 0x6C, 0x54, 0x46, 0, 1, 2, 3]))
+	assert_false(FileAccess.file_exists(export_dir.path_join("Pack/Meshes/A.glb")), "moved, not copied")
+	var kept := GodotImport.import_export(root.path_join("export2_missing"), "res://fab_assets/p", {"uid": "u1"}, target)
+	assert_false(kept.ok)
+	assert_true(FileAccess.file_exists(target.path_join("Pack/Meshes/A.glb")), "a failed import leaves the target alone")

@@ -82,7 +82,9 @@ func test_happy_path_reaches_done() -> void:
 	var importer: Fakes.FakeImporter = jobs.importer
 	assert_eq(importer.calls[0][0], "import_export")
 	assert_eq(importer.calls[0][3].uid, "uid-1")
-	assert_false(DirAccess.dir_exists_absolute(jobs.staging_root.path_join("uid-1")), "staging removed on DONE")
+	assert_true(FileAccess.file_exists(jobs.staging_root.path_join("uid-1/dl0/chunks/C0.bin")), "downloaded chunks kept on DONE")
+	assert_false(DirAccess.dir_exists_absolute(jobs.staging_root.path_join("uid-1/dl0/files")), "assembled files removed (they are in the project)")
+	assert_false(DirAccess.dir_exists_absolute(jobs.staging_root.path_join("uid-1/export")), "export removed (it is in the project)")
 	jobs.queue_free()
 
 
@@ -103,6 +105,87 @@ func test_direct_path_reaches_done() -> void:
 	assert_eq(job.scene, "res://fab_assets_test/my_pack/model.glb")
 	assert_eq(jobs.bridge.calls.size(), 0, "no Unreal involved")
 	jobs.queue_free()
+
+
+func test_direct_import_runs_in_background_and_reports_progress() -> void:
+	var api := _api_with_library()
+	var jobs := _jobs(api)
+	var messages: Array = []
+	jobs.job_changed.connect(func(uid: String):
+		var job: Dictionary = jobs.get_job(uid)
+		messages.append([job.state, job.message, job.progress]))
+	jobs.start(LISTING, "gltf")
+	await _wait_finished(jobs, "uid-1")
+	var job := jobs.get_job("uid-1")
+	assert_eq(job.state, Jobs.State.DONE, job.error)
+	var importer: Fakes.FakeImporter = jobs.importer
+	assert_true(importer.calls[1][5], "import ran off the main thread")
+	assert_true(messages.has([Jobs.State.IMPORTING, "Copying model.glb (1 / 2)", 0.5]), str(messages))
+	assert_eq(job.message, "", "cleared when done")
+	jobs.queue_free()
+
+
+func test_direct_url_downloads_the_file_without_manifest() -> void:
+	var api := _api_with_library()
+	api.direct_url = "https://cdn/files/x?sig=1"
+	var jobs := _jobs(api)
+	jobs.start(LISTING, "fbx")
+	await _wait_finished(jobs, "uid-1")
+	var job := jobs.get_job("uid-1")
+	assert_eq(job.state, Jobs.State.DONE, job.error)
+	var download: Array = api.calls.filter(func(c): return c[0] == "download_file")[0]
+	assert_eq(download[1], "https://cdn/files/x?sig=1")
+	assert_eq(download[2].get_file(), "source.zip")
+	assert_eq(api.calls.filter(func(c): return c[0] == "fetch_bytes").size(), 0, "no manifest")
+	assert_eq(_downloaders.size(), 0, "no chunk downloader")
+	var importer: Fakes.FakeImporter = jobs.importer
+	assert_eq(importer.calls[0], ["extract_zips", download[2].get_base_dir()])
+	jobs.queue_free()
+
+
+func test_direct_format_also_downloads_additional_files() -> void:
+	var api := _api_with_library()
+	api.direct_url = "https://cdn/files/x?sig=1"
+	api.format_files = [{"uid": "f1", "name": "model.fbx", "status": "ready"}]
+	api.extra_files = [{"uid": "t1", "name": "textures.zip", "status": "ready"}]
+	var jobs := _jobs(api)
+	jobs.start(LISTING, "fbx")
+	await _wait_finished(jobs, "uid-1")
+	var job := jobs.get_job("uid-1")
+	assert_eq(job.state, Jobs.State.DONE, job.error)
+	assert_true(["listing_format", "uid-1", "additional-files"] in api.calls)
+	assert_true(["file_download_info", "uid-1", "additional-files", "t1"] in api.calls)
+	var downloads: Array = api.calls.filter(func(c): return c[0] == "download_file")
+	assert_eq(downloads.size(), 2)
+	assert_eq(downloads[0][2].get_file(), "model.fbx")
+	assert_eq(downloads[1][2].get_file(), "textures.zip")
+	var importer: Fakes.FakeImporter = jobs.importer
+	var extracted: Array = importer.calls.filter(func(c): return c[0] == "extract_zips")
+	assert_eq(extracted.size(), 2, "the textures zip is extracted too")
+	var imported: Array = importer.calls.filter(func(c): return c[0] == "import_direct")[0]
+	assert_eq(imported[1], downloads[0][2].get_base_dir())
+	assert_eq(imported[4], [downloads[1][2].get_base_dir()])
+	jobs.queue_free()
+
+
+func test_direct_url_download_failure_fails_the_job() -> void:
+	var api := _api_with_library()
+	api.direct_url = "https://cdn/files/x?sig=1"
+	api.download_ok = false
+	var jobs := _jobs(api)
+	jobs.start(LISTING, "fbx")
+	await _wait_finished(jobs, "uid-1")
+	var job := jobs.get_job("uid-1")
+	assert_eq(job.state, Jobs.State.ERROR)
+	assert_contains(job.error, "HTTP 404")
+	jobs.queue_free()
+
+
+func test_direct_file_name() -> void:
+	assert_eq(Jobs._direct_file_name({"file_name": "model.zip", "download_url": "https://x/y"}), "model.zip")
+	assert_eq(Jobs._direct_file_name({"download_url": "https://x/a/My%20File.fbx?sig=1"}), "My File.fbx")
+	assert_eq(Jobs._direct_file_name({"download_url": "https://x/a/blob?sig=1"}), "blob.zip")
+	assert_eq(Jobs._direct_file_name({"file_name": "../../evil.zip"}), "evil.zip")
 
 
 func test_not_in_library_sets_needs_library() -> void:
@@ -358,4 +441,79 @@ func test_free_listing_needs_web_stops_at_needs_library() -> void:
 	var job := jobs.get_job("uid-1")
 	assert_eq(job.state, Jobs.State.NEEDS_LIBRARY)
 	assert_true(job.needs_web)
+	jobs.queue_free()
+
+
+func test_convert_again_skips_download_and_install() -> void:
+	var api := _api_with_library()
+	var jobs := _jobs(api)
+	var states := _states(jobs)
+	jobs.convert_again(LISTING, ["P", "__ExternalActors__"], ["/Game/P/Maps/Overview"])
+	await _wait_finished(jobs, "uid-1")
+	var job := jobs.get_job("uid-1")
+	assert_eq(job.state, Jobs.State.DONE, job.error)
+	assert_eq(states, [Jobs.State.QUEUED, Jobs.State.CONVERTING, Jobs.State.IMPORTING, Jobs.State.DONE])
+	assert_eq(api.calls, [], "no Fab request")
+	assert_eq(_downloaders.size(), 0, "nothing downloaded")
+	var bridge: Fakes.FakeBridge = jobs.bridge
+	assert_eq(bridge.calls[0], ["commandlet_args", "/Game/P,/Game/__ExternalActors__", "/Game/P/Maps/Overview", jobs.staging_root.path_join("uid-1/export")])
+	assert_false(bridge.calls.any(func(c): return c[0] == "install_pack"), "pack not reinstalled")
+	var importer: Fakes.FakeImporter = jobs.importer
+	assert_eq(importer.calls[0][3].content_folders, ["P", "__ExternalActors__"])
+	assert_eq(job.target, "res://fab_assets_test/my_pack")
+	jobs.queue_free()
+
+
+func test_retry_after_conversion_failure_does_not_download_again() -> void:
+	var api := _api_with_library()
+	var jobs := _jobs(api)
+	jobs.bridge.convert_ok = false
+	jobs.start(LISTING, "unreal-engine")
+	await _wait_finished(jobs, "uid-1")
+	assert_eq(jobs.get_job("uid-1").state, Jobs.State.ERROR)
+	jobs.bridge.convert_ok = true
+	var states := _states(jobs)
+	jobs.retry("uid-1")
+	await _wait_finished(jobs, "uid-1")
+	assert_eq(jobs.get_job("uid-1").state, Jobs.State.DONE, jobs.get_job("uid-1").error)
+	assert_false(states.has(Jobs.State.DOWNLOADING), "retry converts the installed pack")
+	assert_eq(_downloaders.size(), 1, "downloaded once")
+	assert_eq(jobs.bridge.calls.filter(func(c): return c[0] == "install_pack").size(), 1, "installed once")
+	jobs.queue_free()
+
+
+func test_retry_after_download_failure_downloads_again() -> void:
+	var api := _api_with_library()
+	var jobs := _jobs(api)
+	_downloader_ok = false
+	jobs.start(LISTING, "unreal-engine")
+	await _wait_finished(jobs, "uid-1")
+	_downloader_ok = true
+	jobs.retry("uid-1")
+	await _wait_finished(jobs, "uid-1")
+	assert_eq(jobs.get_job("uid-1").state, Jobs.State.DONE)
+	assert_eq(_downloaders.size(), 2, "nothing was installed, so it downloads again")
+	jobs.queue_free()
+
+
+func test_done_without_keep_downloads_removes_staging() -> void:
+	var jobs := _jobs(_api_with_library())
+	jobs.keep_downloads = false
+	jobs.start(LISTING, "unreal-engine")
+	await _wait_finished(jobs, "uid-1")
+	assert_eq(jobs.get_job("uid-1").state, Jobs.State.DONE)
+	assert_false(DirAccess.dir_exists_absolute(jobs.staging_root.path_join("uid-1")))
+	jobs.queue_free()
+
+
+func test_delete_downloads() -> void:
+	var jobs := _jobs(_api_with_library())
+	assert_eq(jobs.downloads_size("uid-1"), 0, "nothing downloaded yet")
+	jobs.start(LISTING, "gltf")
+	assert_false(jobs.delete_downloads("uid-1"), "refused while the job runs")
+	await _wait_finished(jobs, "uid-1")
+	assert_true(jobs.downloads_size("uid-1") > 0)
+	assert_true(jobs.delete_downloads("uid-1"))
+	assert_false(DirAccess.dir_exists_absolute(jobs.staging_root.path_join("uid-1")))
+	assert_eq(jobs.downloads_size("uid-1"), 0)
 	jobs.queue_free()

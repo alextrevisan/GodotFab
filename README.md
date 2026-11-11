@@ -77,12 +77,28 @@ Unreal Editor** abre o mapa do pacote; rode *UnrealToGodot → Export To Godot* 
    pede o manifesto assinado (`POST /e/artifacts/<artifactId>/manifest` ou, para glTF/FBX,
    `/p/egl/listings/<uid>/asset-formats/<fmt>/files/<file>/download-info`), baixa os chunks do
    CDN da Epic em paralelo, remonta os arquivos e confere o SHA-1 de cada um. Downloads
-   interrompidos continuam de onde pararam (`<editor data>/godotfab/downloads/<uid>`).
+   interrompidos continuam de onde pararam (`res://.godotfab/downloads/<uid>`, no disco do
+   projeto: instalar o pacote num projeto Unreal do mesmo disco e importar o export viram
+   `rename`, sem cópia; a pasta fica fora do FileSystem dock e do git).
 3. glTF/FBX: zips são extraídos e os modelos/texturas copiados para `res://fab_assets/<nome>/`.
    Unreal: o conteúdo vai para `Content/` do projeto Unreal (arquivos existentes são salvos em
    `Saved/GodotFabBackups/`), o commandlet exporta o mapa *Overview* (ou um level gerado com
    todos os meshes) e a pasta exportada é copiada para o projeto com os caminhos `res://`
-   reescritos. Cada pasta importada guarda um `.godotfab.json` com a origem.
+   reescritos. Cada pasta importada guarda um `.godotfab.json` com a origem. Reimportar
+   **sincroniza** a pasta em vez de substituí-la: arquivos com o mesmo tamanho e MD5 não são
+   tocados (e o `.import` que a Godot reescreveu é mantido se o asset não mudou), então a
+   Godot só reimporta o que mudou de fato. Arquivos que saíram do export são apagados.
+4. Os arquivos baixados ficam guardados: ao terminar, o addon mantém os chunks em
+   `res://.godotfab/downloads/<uid>/dl*/chunks`. Ele apaga só o que já é cópia: os
+   arquivos remontados (já estão no projeto Unreal ou no Godot) e a pasta exportada (já foi
+   importada). Assim, **Download again** remonta tudo do cache, sem rede. Para desligar, use
+   *Editor Settings → GodotFab → Downloads → Keep Downloaded Files*. O botão **Delete
+   downloaded files (tamanho)** no detalhe do asset apaga esse cache. O asset continua no
+   projeto Godot e no projeto Unreal.
+5. **Convert again** (pacotes Unreal já importados) roda de novo só o commandlet sobre o
+   pacote que já está instalado no `Content/` do projeto Unreal e reimporta o resultado.
+   Ele não baixa nada nem reinstala, então é o caminho para conferir uma correção no
+   exportador. **Retry**, depois de uma falha na conversão, faz o mesmo.
 
 Os endpoints da Fab não são documentados pela Epic (são os que o Epic Games Launcher e o
 plugin Fab do Unreal usam); podem mudar sem aviso. Estão isolados em `addons/godotfab/fab_api.gd`.
@@ -102,6 +118,20 @@ plugin Fab do Unreal usam); podem mudar sem aviso. Estão isolados em `addons/go
   (as conexões passam para o nó mantido) e o parâmetro de textura do lado vertex é renomeado
   para `<Nome>_VS`. Para uma pasta importada antes
   dessa correção, rode o fixer nela: a função `ExportFixes.fix_export_tree(<pasta absoluta>)`.
+- **"Expected a ';'" ou "Unknown character #35: '#'" nos shaders convertidos**: dois outros
+  casos que o importador corrige. O UnrealToGodot copia o nome do parâmetro do Unreal como
+  está (`Level 1 Wind`, `Use gradient`), e um nome com espaço não é um identificador válido.
+  O importador troca os caracteres inválidos por `_`, no shader e nos materiais. Nas
+  expressões customizadas, ele troca `COMPILER_HLSL` por um float (`#if 0.0`). O
+  pré-processador da Godot só aceita inteiro e rejeita o shader inteiro (o erro aponta para o
+  primeiro `#define`), então a condição vira `#if 0`. No Medieval Village isso afetava as
+  árvores (spruce), as plantas (barley, kidney weed, dead herb weed) e as caixas de texto.
+- **"Error while loading file" ao abrir a cena no editor**: o UnrealToGodot grava o nó
+  `CollisionShape3D` do prefab mesmo quando pula a forma (mesh sem convex hull nem LOD de
+  colisão), deixando `shape = SubResource("…")` sem o `[sub_resource]`. A Godot recusa o prefab
+  ("Invalid parameter") e o editor recusa toda cena que o instancia. O importador remove esses
+  nós (`fix_missing_shape_subresources`). No Medieval Village eram 6 prefabs (paredes,
+  fachada, janela).
 - **Colisão deslocada do mesh**: bug do UnrealToGodot (também na exportação pela UI): a
   `CollisionShape3D` do prefab recebe o transform de mundo da instância que gerou o prefab, e na
   cena ela fica deslocada em dobro. O `install_commandlet.sh` aplica um segundo patch de uma

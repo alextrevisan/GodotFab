@@ -47,6 +47,9 @@ var _in_library: Dictionary = {}
 var _adding := false
 var _action: Button
 var _secondary: Button
+var _convert_again: Button
+var _delete_downloads: Button
+var _delete_confirm: ConfirmationDialog
 var _status: Label
 var _error_box: VBoxContainer
 var _error_label: Label
@@ -175,6 +178,23 @@ func setup(new_gallery: Node) -> void:
 	_scene = OptionButton.new()
 	_scene.tooltip_text = "Level UnrealToGodot exports. Maps show up once the pack is installed in the Unreal project."
 	footer.add_child(_scene)
+	_delete_downloads = Button.new()
+	_delete_downloads.visible = false
+	_delete_downloads.icon = get_theme_icon("Remove", "EditorIcons")
+	_delete_downloads.tooltip_text = "Deletes the files GodotFab keeps from the download of this asset. Downloading it again then fetches everything from Fab. The asset stays in this project and in the Unreal project."
+	_delete_downloads.pressed.connect(_ask_delete_downloads)
+	footer.add_child(_delete_downloads)
+	_delete_confirm = ConfirmationDialog.new()
+	_delete_confirm.title = "Delete downloaded files"
+	_delete_confirm.ok_button_text = "Delete"
+	_delete_confirm.confirmed.connect(_delete_downloads_now)
+	add_child(_delete_confirm)
+	_convert_again = Button.new()
+	_convert_again.visible = false
+	_convert_again.text = "Convert again"
+	_convert_again.tooltip_text = "Runs the Unreal conversion again on the pack already installed in the Unreal project and imports the result, without downloading anything."
+	_convert_again.pressed.connect(_convert_again_now)
+	footer.add_child(_convert_again)
 	_secondary = Button.new()
 	_secondary.visible = false
 	footer.add_child(_secondary)
@@ -480,6 +500,8 @@ func _update_action() -> void:
 	_engine.visible = is_unreal
 	_engine_label.visible = is_unreal
 	_secondary.visible = false
+	_convert_again.visible = false
+	_delete_downloads.visible = false
 	_error_box.visible = false
 	_action.disabled = false
 	_action.icon = null
@@ -503,6 +525,7 @@ func _update_action() -> void:
 		_secondary.visible = true
 		_secondary.text = "Download again"
 		_secondary.pressed.connect(_start_download)
+		_convert_again.visible = UnrealBridge.pack_installed(Settings.unreal_project(), _pack_folders())
 	elif state == Jobs.State.NEEDS_LOGIN or not logged_in:
 		_action.text = "Log In…"
 		_status.text = str(job.get("error", "")) if state == Jobs.State.NEEDS_LOGIN else "Log in to your Epic account to download from your Fab library."
@@ -536,6 +559,10 @@ func _update_action() -> void:
 			_status.text += " Not in your library yet."
 		elif logged_in and _in_library.get(uid, false) == true:
 			_status.text += " In your library."
+	if not state in Jobs.ACTIVE:
+		var kept: int = gallery.jobs.downloads_size(uid)
+		_delete_downloads.visible = kept > 0
+		_delete_downloads.text = "Delete downloaded files (%s)" % String.humanize_size(kept)
 	_fill_scenes() if is_unreal and _scene.item_count <= 2 else null
 
 
@@ -565,6 +592,41 @@ func _on_action() -> void:
 			hide()
 		_:
 			_start_download()
+	_update_action()
+
+
+## Content folders of the installed Unreal pack (this session's job, else the
+## manifest written at import).
+func _pack_folders() -> Array:
+	var uid := str(listing.get("uid", ""))
+	var folders: Array = gallery.jobs.get_job(uid).get("content_folders", [])
+	if folders.is_empty():
+		var downloaded: Dictionary = gallery.downloaded_entry(uid)
+		if str(downloaded.get("format", "")) == FabApi.UNREAL_FORMAT:
+			folders = downloaded.get("content_folders", [])
+	return folders
+
+
+func _convert_again_now() -> void:
+	var uid := str(listing.get("uid", ""))
+	var maps: Array = gallery.jobs.get_job(uid).get("maps", [])
+	if maps.is_empty():
+		maps = gallery.downloaded_entry(uid).get("maps", [])
+	gallery.jobs.convert_again(listing, _pack_folders(), maps, selected_scene())
+	_update_action()
+
+
+func _ask_delete_downloads() -> void:
+	var uid := str(listing.get("uid", ""))
+	_delete_confirm.dialog_text = "Delete the downloaded files of \"%s\" (%s)?\n\nDownloading it again will fetch everything from Fab. The asset stays in this project and in the Unreal project." % [
+		str(listing.get("title", uid)), String.humanize_size(gallery.jobs.downloads_size(uid))]
+	_delete_confirm.popup_centered()
+
+
+func _delete_downloads_now() -> void:
+	var uid := str(listing.get("uid", ""))
+	if not gallery.jobs.delete_downloads(uid):
+		_status.text = "Could not delete the downloaded files (is the job still running?)"
 	_update_action()
 
 

@@ -4,7 +4,8 @@ extends RefCounted
 ## HTTPRequest node, so services can be tested with a fake Callable.
 ##
 ## req: {method: "GET"|"POST"|"DELETE", url: String, headers: PackedStringArray,
-##       body: String|PackedByteArray, timeout: float}
+##       body: String|PackedByteArray, timeout: float,
+##       download_file: String (optional: the body is written there, not returned)}
 ## result: {ok: bool (transport ok and 2xx), status: int, body: PackedByteArray,
 ##          json: Variant|null, headers: PackedStringArray, error: String}
 
@@ -37,6 +38,11 @@ func fetch(req: Dictionary) -> Dictionary:
 	request.use_threads = true
 	request.accept_gzip = true
 	request.timeout = float(req.get("timeout", DEFAULT_TIMEOUT))
+	var download_file := str(req.get("download_file", ""))
+	if not download_file.is_empty():
+		DirAccess.make_dir_recursive_absolute(download_file.get_base_dir())
+		request.download_file = download_file
+		request.accept_gzip = false
 	parent.add_child(request)
 	var headers := PackedStringArray(req.get("headers", PackedStringArray()))
 	if not _has_header(headers, "User-Agent"):

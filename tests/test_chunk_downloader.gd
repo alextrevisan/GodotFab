@@ -83,6 +83,27 @@ func test_downloads_and_assembles_files() -> void:
 	assert_true(FileAccess.file_exists(staging.path_join("chunks").path_join(GUID_1 + ".bin")))
 
 
+func test_assembles_on_a_thread_reporting_progress() -> void:
+	var manifest := _manifest()
+	var staging := tmp_dir()
+	# A stale file from an earlier assembly is removed.
+	write_file(staging.path_join("files/stale.bin"), "old")
+	var cdn := _cdn(manifest)
+	var dl := _downloader(manifest, cdn, staging)
+	var events: Array = []
+	var threads: Array = []
+	dl.assembling.connect(func(done, total):
+		events.append([done, total])
+		threads.append(OS.get_thread_caller_id() == OS.get_main_thread_id()))
+	var result = await dl.run()
+	assert_true(result.ok, result.error)
+	var count: int = manifest.files.size()
+	assert_eq(events.front(), [0, count], "starts at 0")
+	assert_eq(events.back(), [count, count], "ends with every file")
+	assert_false(threads.has(false), "signals reach the main thread")
+	assert_false(FileAccess.file_exists(staging.path_join("files/stale.bin")), "stale file removed")
+
+
 func test_resumes_from_existing_chunks() -> void:
 	var manifest := _manifest()
 	var cdn := _cdn(manifest)

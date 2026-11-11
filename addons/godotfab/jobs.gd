@@ -44,6 +44,8 @@ var unreal_project := ""
 var unreal_engine := ""
 var download_dir := ""
 var parallel_chunks := 4
+## Keep the downloaded chunks when a job is done (see Settings.KEEP_DOWNLOADS).
+var keep_downloads := true
 var export_options: Dictionary = {}
 
 var _jobs: Dictionary = {}
@@ -64,13 +66,15 @@ func configure_from_settings() -> void:
 	unreal_engine = Settings.unreal_engine()
 	download_dir = Settings.download_dir()
 	parallel_chunks = int(Settings.get_editor(Settings.PARALLEL_CHUNKS))
+	keep_downloads = bool(Settings.get_editor(Settings.KEEP_DOWNLOADS))
 	export_options = Settings.export_options()
 
 
+## Downloads live on the project's disk (res://.godotfab is hidden from the
+## FileSystem dock and git-ignored): installing a pack into an Unreal project
+## on the same disk and importing the export are then renames, not copies.
 static func _default_staging_root() -> String:
-	if Engine.is_editor_hint():
-		return EditorInterface.get_editor_paths().get_data_dir().path_join("godotfab/downloads")
-	return ProjectSettings.globalize_path("user://godotfab/downloads")
+	return ProjectSettings.globalize_path("res://.godotfab/downloads")
 
 
 # MARK: public
@@ -81,28 +85,48 @@ func start(listing: Dictionary, format: String, scene_pref := "auto", engine_ver
 	var uid := str(listing.get("uid", ""))
 	if uid.is_empty() or is_active(uid):
 		return
-	_jobs[uid] = {
-		"uid": uid, "title": str(listing.get("title", uid)), "listing": listing, "format": format,
-		"scene_pref": scene_pref, "engine_version": engine_version, "state": State.QUEUED, "progress": 0.0, "message": "", "error": "",
-		"log_tail": "", "scene": "", "maps": [], "content_folders": [], "target": "", "started_at": Time.get_unix_time_from_system(),
-		"cancelled": false, "staging": staging_root.path_join(uid), "needs_web": false,
-	}
+	_new_job(uid, listing, format, scene_pref, engine_version)
 	_emit(uid)
 	_run(uid)
 
 
+## Converts again an Unreal pack that is still installed in the Unreal project
+## (an earlier download put [param content_folders] there): no Fab request, no
+## download, no install, straight to the commandlet and the import.
+func convert_again(listing: Dictionary, content_folders: Array, maps: Array, scene_pref := "auto") -> void:
+	var uid := str(listing.get("uid", ""))
+	if uid.is_empty() or is_active(uid) or content_folders.is_empty():
+		return
+	var job := _new_job(uid, listing, FabApi.UNREAL_FORMAT, scene_pref, "")
+	job.content_folders = content_folders.duplicate()
+	job.maps = maps.duplicate()
+	job.installed = true
+	_emit(uid)
+	await _convert(uid)
+	_finish(uid)
+
+
+## Starts the job again. Once its Unreal pack is installed, only the
+## conversion is redone (no new download).
 func retry(uid: String) -> void:
 	var job: Dictionary = _jobs.get(uid, {})
 	if job.is_empty() or is_active(uid):
 		return
-	start(job.listing, job.format, job.scene_pref, job.engine_version)
+	_restart(job, job.scene_pref)
 
 
 func set_scene_and_retry(uid: String, scene: String) -> void:
 	var job: Dictionary = _jobs.get(uid, {})
 	if job.is_empty() or is_active(uid):
 		return
-	start(job.listing, job.format, scene, job.engine_version)
+	_restart(job, scene)
+
+
+func _restart(job: Dictionary, scene_pref: String) -> void:
+	if job.get("installed", false):
+		convert_again(job.listing, job.content_folders, job.maps, scene_pref)
+	else:
+		start(job.listing, job.format, scene_pref, job.engine_version)
 
 
 func cancel(uid: String) -> void:
@@ -235,10 +259,23 @@ func _run(uid: String) -> void:
 		return
 	_set_state(uid, State.DOWNLOADING)
 	var files_dirs: Array = []
+	var extra_dirs: Array = []
 	var all_files: Array = []
 	for i in builds.size():
 		var build: Dictionary = builds[i]
 		var staging: String = job.staging.path_join("dl%d" % i)
+		if build.has("download_url"):
+			var direct: Dictionary = await _download_direct(uid, build, staging, i, builds.size())
+			if job.cancelled:
+				return
+			if not direct.ok:
+				_fail(uid, direct.error)
+				return
+			if build.get("extra", false):
+				extra_dirs.append(direct.files_dir)
+			else:
+				files_dirs.append(direct.files_dir)
+			continue
 		var downloader = downloader_factory.call(build.manifest, build.base_urls, staging, api.fetch_bytes, parallel_chunks)
 		_downloaders[uid] = downloader
 		var base_progress := float(i) / builds.size()
@@ -246,6 +283,10 @@ func _run(uid: String) -> void:
 			job.progress = base_progress + (float(done) / maxf(1.0, total)) / builds.size()
 			job.message = "%d / %d chunks (%s)" % [done, total, _mb(bytes_done, bytes_total)]
 			_emit(uid))
+		if downloader.has_signal("assembling"):
+			downloader.assembling.connect(func(done: int, total: int):
+				job.message = "Assembling files %d / %d" % [done, total]
+				_emit(uid))
 		var result: Dictionary = await downloader.run()
 		if _downloaders.get(uid) == downloader:
 			_downloaders.erase(uid)
@@ -261,12 +302,72 @@ func _run(uid: String) -> void:
 	if job.format == FabApi.UNREAL_FORMAT:
 		await _unreal_path(uid, files_dirs)
 	else:
-		await _direct_path(uid, files_dirs)
+		await _direct_path(uid, files_dirs, extra_dirs)
+	_finish(uid)
+
+
+func _finish(uid: String) -> void:
+	var job: Dictionary = _jobs[uid]
 	if job.cancelled or job.state != State.IMPORTING:
 		return
 	_set_state(uid, State.DONE)
-	_remove_dir(job.staging)
+	if keep_downloads:
+		_keep_only_chunks(job.staging)
+	else:
+		_remove_dir(job.staging)
 	job_finished.emit(uid, true)
+
+
+## Bytes kept in the download folder of [param uid] (0 when there is none).
+func downloads_size(uid: String) -> int:
+	return _dir_size(staging_root.path_join(uid))
+
+
+## Deletes the downloaded files of [param uid]. Refused while its job runs.
+## The pack installed in the Unreal project is not touched.
+func delete_downloads(uid: String) -> bool:
+	if is_active(uid):
+		return false
+	var dir := staging_root.path_join(uid)
+	if DirAccess.dir_exists_absolute(dir):
+		_remove_dir(dir)
+		Log.info("Deleted the downloaded files in %s" % dir)
+	return not DirAccess.dir_exists_absolute(dir)
+
+
+## Keeps the chunk cache of each build (dl*/chunks): files/ was moved into the
+## Unreal project or copied into the Godot project, and export/ was imported.
+static func _keep_only_chunks(staging: String) -> void:
+	var dir := DirAccess.open(staging)
+	if dir == null:
+		return
+	for sub in dir.get_directories():
+		var path := staging.path_join(sub)
+		if sub.begins_with("dl"):
+			for inner in DirAccess.get_directories_at(path):
+				if inner != "chunks":
+					_remove_dir(path.path_join(inner))
+			for file in DirAccess.get_files_at(path):
+				DirAccess.remove_absolute(path.path_join(file))
+		else:
+			_remove_dir(path)
+	for file in dir.get_files():
+		DirAccess.remove_absolute(staging.path_join(file))
+
+
+static func _dir_size(path: String) -> int:
+	# get_files_at() logs an error for a missing folder (most listings were
+	# never downloaded), so check first.
+	if not DirAccess.dir_exists_absolute(path):
+		return 0
+	var total := 0
+	for file in DirAccess.get_files_at(path):
+		var f := FileAccess.open(path.path_join(file), FileAccess.READ)
+		if f:
+			total += f.get_length()
+	for sub in DirAccess.get_directories_at(path):
+		total += _dir_size(path.path_join(sub))
+	return total
 
 
 ## The library item of the job's listing, refreshing the library once.
@@ -319,7 +420,22 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 		for file in format.files:
 			if not file is Dictionary or str(file.get("status", "ready")) != "ready":
 				continue
-			pointer_sets.append(await api.file_download_info(uid, job.format, str(file.get("uid", ""))))
+			var info: Dictionary = await api.file_download_info(uid, job.format, str(file.get("uid", "")))
+			info["file_name"] = str(file.get("name", ""))
+			pointer_sets.append(info)
+		# Textures often ship apart, as the listing's additional files (a textures.zip next
+		# to a bare FBX). A listing without them answers not ok: nothing to add.
+		var extras: Dictionary = await api.listing_format(uid, FabApi.ADDITIONAL_FORMAT)
+		if job.cancelled:
+			return []
+		if extras.get("ok", false):
+			for file in extras.get("files", []):
+				if not file is Dictionary or str(file.get("status", "ready")) != "ready":
+					continue
+				var info: Dictionary = await api.file_download_info(uid, FabApi.ADDITIONAL_FORMAT, str(file.get("uid", "")))
+				info["file_name"] = str(file.get("name", ""))
+				info["extra"] = true
+				pointer_sets.append(info)
 	var builds: Array = []
 	for pointers in pointer_sets:
 		if job.cancelled:
@@ -330,6 +446,9 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 		if not pointers.ok:
 			_fail(uid, pointers.error)
 			return []
+		if not str(pointers.get("download_url", "")).is_empty():
+			builds.append({"download_url": pointers.download_url, "file_name": _direct_file_name(pointers), "extra": pointers.get("extra", false)})
+			continue
 		var fetched := await _fetch_manifest(pointers.sources)
 		if not fetched.ok:
 			_fail(uid, fetched.error)
@@ -339,6 +458,36 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 			base_urls.append(source.base_url)
 		builds.append({"manifest": fetched.manifest, "base_urls": base_urls})
 	return builds
+
+
+## Downloads a single-file build (a signed URL, no manifest) into
+## `<staging>/files/`; {ok, error, files_dir}.
+func _download_direct(uid: String, build: Dictionary, staging: String, index: int, count: int) -> Dictionary:
+	var job: Dictionary = _jobs[uid]
+	var files_dir := staging.path_join("files")
+	_remove_dir(files_dir)
+	DirAccess.make_dir_recursive_absolute(files_dir)
+	job.progress = float(index) / count
+	job.message = "Downloading %s…" % build.file_name
+	_emit(uid)
+	var response: Dictionary = await api.download_file(build.download_url, files_dir.path_join(build.file_name))
+	if not response.ok:
+		return {"ok": false, "error": "Could not download %s: %s" % [build.file_name, response.error], "files_dir": files_dir}
+	return {"ok": true, "error": "", "files_dir": files_dir}
+
+
+## A safe local name for a direct download: the file's listed name, else the
+## URL's last path segment; ".zip" when it has no extension.
+static func _direct_file_name(pointers: Dictionary) -> String:
+	var name := str(pointers.get("file_name", ""))
+	if name.is_empty():
+		name = str(pointers.get("download_url", "")).split("?")[0].get_file().uri_decode()
+	name = name.get_file().validate_filename()
+	if name.is_empty():
+		name = "download"
+	if name.get_extension().is_empty():
+		name += ".zip"
+	return name
 
 
 func _fetch_manifest(sources: Array) -> Dictionary:
@@ -358,7 +507,8 @@ func _fetch_manifest(sources: Array) -> Dictionary:
 func _unreal_path(uid: String, files_dirs: Array) -> void:
 	var job: Dictionary = _jobs[uid]
 	_set_state(uid, State.INSTALLING)
-	var installed: Dictionary = bridge.install_pack(files_dirs[0], unreal_project)
+	var installed: Dictionary = await _in_background(uid, func(report: Callable) -> Dictionary:
+		return bridge.install_pack(files_dirs[0], unreal_project, "", report))
 	if not installed.ok:
 		_fail(uid, installed.error)
 		return
@@ -367,14 +517,21 @@ func _unreal_path(uid: String, files_dirs: Array) -> void:
 	if installed.content_folders.is_empty():
 		_fail(uid, "The pack has no Content folder to convert")
 		return
+	job.installed = true
+	await _convert(uid)
+
+
+## Runs the commandlet on the installed pack, then imports the export.
+func _convert(uid: String) -> void:
+	var job: Dictionary = _jobs[uid]
 	await _wait_for_slot(uid, State.CONVERTING, MAX_CONVERSIONS, State.INSTALLING, "Waiting for Unreal…")
 	if job.cancelled:
 		return
 	_set_state(uid, State.CONVERTING)
 	var export_dir: String = job.staging.path_join("export")
 	var log_path: String = job.staging.path_join("convert.log")
-	var content_path := UnrealBridge.content_paths(installed.content_folders)
-	var scene := bridge.pick_scene(installed.maps, job.scene_pref)
+	var content_path := UnrealBridge.content_paths(job.content_folders)
+	var scene := bridge.pick_scene(job.maps, job.scene_pref)
 	var options := export_options.duplicate()
 	var args := bridge.commandlet_args(unreal_project, content_path, scene, export_dir, log_path, options)
 	var on_progress := func(p: Dictionary):
@@ -394,29 +551,94 @@ func _unreal_path(uid: String, files_dirs: Array) -> void:
 	_set_state(uid, State.IMPORTING)
 	var target := _target_res_dir(job)
 	job.target = target
-	var imported: Dictionary = importer.import_export(export_dir, target, _meta(job))
+	# The export is this job's own staging folder: its files can be moved.
+	var meta := _meta(job)
+	var imported: Dictionary = await _in_background(uid, func(report: Callable) -> Dictionary:
+		return importer.import_export(export_dir, target, meta, "", true, report))
+	if job.cancelled:
+		return
 	if not imported.ok:
 		_fail(uid, imported.error)
 		return
 	job.scene = imported.scene
 
 
-func _direct_path(uid: String, files_dirs: Array) -> void:
+func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> void:
 	var job: Dictionary = _jobs[uid]
+	if files_dirs.is_empty():
+		_fail(uid, "This asset has no %s files" % job.format)
+		return
 	_set_state(uid, State.EXTRACTING)
-	for files_dir in files_dirs:
-		var extracted: Dictionary = importer.extract_zips(files_dir)
+	for files_dir in files_dirs + extra_dirs:
+		var extracted: Dictionary = await _in_background(uid, func(report: Callable) -> Dictionary:
+			return importer.extract_zips(files_dir, report))
+		if job.cancelled:
+			return
 		if not extracted.ok:
 			_fail(uid, extracted.error)
 			return
 	_set_state(uid, State.IMPORTING)
 	var target := _target_res_dir(job)
 	job.target = target
-	var imported: Dictionary = importer.import_direct(files_dirs[0], target, _meta(job))
+	var meta := _meta(job)
+	var imported: Dictionary = await _in_background(uid, func(report: Callable) -> Dictionary:
+		return importer.import_direct(files_dirs[0], target, meta, "", extra_dirs, report))
+	if job.cancelled:
+		return
 	if not imported.ok:
 		_fail(uid, imported.error)
 		return
 	job.scene = imported.scene
+
+
+## Runs [param work] on a background thread so the editor stays responsive
+## while files are extracted, copied or moved, and returns its result.
+## [param work] gets a `report(done, total, label)` callable, safe to call from
+## the thread: its last values become the job's message and progress (total 0
+## leaves the progress as is). The work can't be interrupted; callers check
+## `job.cancelled` afterwards.
+func _in_background(uid: String, work: Callable) -> Variant:
+	var job: Dictionary = _jobs[uid]
+	# A bound method, not a lambda: a lambda called from the worker thread
+	# reports its captured Mutex as freed ("Lambda capture at index 0 was
+	# freed") and the progress is lost.
+	var status := _ThreadProgress.new()
+	var report := Callable(status, "report")
+	var thread := Thread.new()
+	thread.start(func() -> Variant: return work.call(report))
+	while thread.is_alive():
+		await Engine.get_main_loop().process_frame
+		var update := status.take()
+		if not update.is_empty() and not job.cancelled:
+			if update.total > 0:
+				job.progress = float(update.done) / update.total
+			job.message = ("%s (%d / %d)" % [update.label, update.done, update.total]) if update.total > 0 \
+				else ("%s (%d)" % [update.label, update.done]) if update.done > 0 else str(update.label)
+			_emit(uid)
+	var result = thread.wait_to_finish()
+	if not job.cancelled:
+		job.message = ""
+	return result
+
+
+## Last progress reported by a worker thread, read by the main thread.
+class _ThreadProgress:
+	extends RefCounted
+	var _mutex := Mutex.new()
+	var _status := {}
+
+	func report(done: int, total: int, label: String) -> void:
+		_mutex.lock()
+		_status = {"done": done, "total": total, "label": label}
+		_mutex.unlock()
+
+	## The status reported since the last call, {} if none.
+	func take() -> Dictionary:
+		_mutex.lock()
+		var out := _status
+		_status = {}
+		_mutex.unlock()
+		return out
 
 
 ## Blocks while [param limit] other jobs are in [param busy_state].
@@ -439,6 +661,16 @@ func _wait_for_slot(uid: String, busy_state: int, limit: int, wait_state: int, m
 
 
 # MARK: helpers
+
+func _new_job(uid: String, listing: Dictionary, format: String, scene_pref: String, engine_version: String) -> Dictionary:
+	_jobs[uid] = {
+		"uid": uid, "title": str(listing.get("title", uid)), "listing": listing, "format": format,
+		"scene_pref": scene_pref, "engine_version": engine_version, "state": State.QUEUED, "progress": 0.0, "message": "", "error": "",
+		"log_tail": "", "scene": "", "maps": [], "content_folders": [], "target": "", "started_at": Time.get_unix_time_from_system(),
+		"cancelled": false, "staging": staging_root.path_join(uid), "needs_web": false, "installed": false,
+	}
+	return _jobs[uid]
+
 
 func _target_res_dir(job: Dictionary) -> String:
 	var slug: String = importer.slug(job.title)

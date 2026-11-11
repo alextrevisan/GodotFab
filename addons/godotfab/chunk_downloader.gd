@@ -7,14 +7,14 @@ extends RefCounted
 ## staging layout: <staging>/chunks/<GUIDHEX>.bin and <staging>/files/<relative>
 
 signal progress(done: int, total: int, bytes_done: int, bytes_total: int)
+## Emitted on the main thread while the chunks are assembled into files.
+signal assembling(done: int, total: int)
 
 const Log = preload("res://addons/godotfab/log.gd")
 const Manifest = preload("res://addons/godotfab/manifest.gd")
 
 ## Seconds before each new round of attempts on every CDN.
 var retry_delays: Array = [2.0, 5.0, 15.0]
-## Parts assembled between frames, to keep the editor responsive.
-const PARTS_PER_FRAME := 16
 
 var manifest: Dictionary
 var base_urls: Array
@@ -31,6 +31,9 @@ var _bytes_done := 0
 var _bytes_total := 0
 var _error := ""
 var _running_workers := 0
+## Files assembled so far by the worker thread (guarded by _mutex).
+var _assembled := 0
+var _mutex := Mutex.new()
 
 
 func _init(new_manifest: Dictionary, new_base_urls: Array, new_staging_dir: String, new_fetch_bytes: Callable, new_workers := 4) -> void:
@@ -72,8 +75,6 @@ func run() -> Dictionary:
 			if not chunks.has(part.guid):
 				return _fail("The manifest references unknown chunk %s" % part.guid)
 	DirAccess.make_dir_recursive_absolute(chunks_dir())
-	_remove_dir(files_dir())
-	DirAccess.make_dir_recursive_absolute(files_dir())
 	_clean_tmp_chunks()
 
 	# Unique chunks in first-use order; skip those already on disk.
@@ -108,25 +109,51 @@ func run() -> Dictionary:
 	if not _error.is_empty():
 		return _fail(_error)
 
-	# Assemble and verify.
+	# Assemble and verify on a worker thread: packs reach gigabytes, and
+	# reading, hashing and writing them on the main thread froze the editor
+	# (with every chunk already cached, for minutes).
+	_assembled = 0
+	assembling.emit(0, files.size())
+	var thread := Thread.new()
+	thread.start(_assemble_all.bind(files, targets))
+	var reported := 0
+	while thread.is_alive():
+		await Engine.get_main_loop().process_frame
+		_mutex.lock()
+		var done := _assembled
+		_mutex.unlock()
+		if done != reported:
+			reported = done
+			assembling.emit(done, files.size())
+	var assembled: Dictionary = thread.wait_to_finish()
+	if _cancelled:
+		return _fail("cancelled")
+	if not assembled.ok:
+		return _fail(assembled.error)
+	assembling.emit(files.size(), files.size())
+	return {"ok": true, "error": "", "files_dir": files_dir(), "files": assembled.files}
+
+
+## Runs on the worker thread started by run().
+func _assemble_all(files: Array, targets: Array) -> Dictionary:
+	_remove_dir(files_dir())
+	DirAccess.make_dir_recursive_absolute(files_dir())
 	var out_files: Array = []
-	var parts_since_yield := 0
 	for i in files.size():
+		if _cancelled:
+			return {"ok": false, "error": "cancelled"}
 		var entry: Dictionary = files[i]
 		var target: String = files_dir().path_join(targets[i])
 		var result := _assemble(entry, target)
 		if not result.ok:
 			for part in entry.parts:
 				DirAccess.remove_absolute(_chunk_file(part.guid))
-			return _fail(result.error)
+			return {"ok": false, "error": result.error}
 		out_files.append(target)
-		parts_since_yield += entry.parts.size()
-		if parts_since_yield >= PARTS_PER_FRAME:
-			parts_since_yield = 0
-			await Engine.get_main_loop().process_frame
-			if _cancelled:
-				return _fail("cancelled")
-	return {"ok": true, "error": "", "files_dir": files_dir(), "files": out_files}
+		_mutex.lock()
+		_assembled = i + 1
+		_mutex.unlock()
+	return {"ok": true, "error": "", "files": out_files}
 
 
 func _worker() -> void:

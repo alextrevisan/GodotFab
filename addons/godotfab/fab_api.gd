@@ -16,6 +16,8 @@ const LISTING_URL := HOST + "/listings/%s"
 const ALL_FORMATS := ["gltf", "fbx", "unreal-engine"]
 const DIRECT_FORMATS := ["gltf", "fbx"]
 const UNREAL_FORMAT := "unreal-engine"
+## The listing's extra files (textures shipped apart from an FBX, say).
+const ADDITIONAL_FORMAT := "additional-files"
 ## [value, label] pairs.
 const SORTS := [["-relevance", "Relevance"], ["-createdAt", "Newest"], ["price", "Price: low to high"], ["-price", "Price: high to low"], ["-averageRating", "Rating"]]
 const LISTING_TYPES := [["", "All types"], ["3d-model", "3D Models"], ["environment", "Environments"], ["material", "Materials"], ["animation", "Animations"], ["vfx", "VFX"], ["audio", "Audio"], ["game-template", "Templates"], ["tool-and-plugin", "Tools & Plugins"], ["hdri", "HDRI"], ["2d-asset", "2D Assets"]]
@@ -343,7 +345,13 @@ func _parse_download_info(response: Dictionary) -> Dictionary:
 		return _pointers_error("Fab returned no download information", false)
 	var info: Dictionary = infos[0]
 	var sources := pair_sources(info)
+	var download_url := str(info.get("downloadUrl", info.get("download_url", "")))
+	if sources.is_empty() and not download_url.is_empty():
+		# Files of the direct formats (FBX, glTF…) come as one signed URL, no manifest.
+		return {"ok": true, "error": "", "unauthorized": false, "build_version": "", "sources": [], "download_url": download_url}
 	if sources.is_empty():
+		Log.warning("No usable download location in Fab's answer (keys: %s, distribution points: %s)" % [
+			", ".join(PackedStringArray(info.keys())), str(info.get("distributionPoints", info.get("distribution_points", []))).left(500)])
 		return _pointers_error("Fab returned no usable download location", false)
 	return {"ok": true, "error": "", "unauthorized": false, "build_version": str(info.get("buildVersion", info.get("build_version", ""))), "sources": sources}
 
@@ -352,25 +360,45 @@ static func _pointers_error(message: String, unauthorized: bool) -> Dictionary:
 	return {"ok": false, "error": message, "unauthorized": unauthorized, "build_version": "", "sources": []}
 
 
-## Each CDN base URL paired with the signed manifest URL on the same CDN.
+## Each CDN base URL paired with the signed manifest URL on the same CDN. A
+## manifest URL no base URL matches (Fab sometimes lists no base URLs, or
+## base URLs on other hosts) uses its own folder, the build's CloudDir.
 static func pair_sources(info: Dictionary) -> Array:
 	var manifest_urls := []
 	for point in info.get("distributionPoints", info.get("distribution_points", [])):
 		if point is Dictionary:
-			manifest_urls.append(str(point.get("manifestUrl", point.get("manifest_url", ""))))
+			var manifest_url := str(point.get("manifestUrl", point.get("manifest_url", "")))
+			if not manifest_url.is_empty():
+				manifest_urls.append(manifest_url)
 	var sources := []
+	var paired := {}
 	for base in info.get("distributionPointBaseUrls", info.get("distribution_point_base_urls", [])):
 		var base_url := str(base)
+		if base_url.is_empty():
+			continue
 		for manifest_url in manifest_urls:
-			if manifest_url.begins_with(base_url):
+			if not paired.has(manifest_url) and manifest_url.begins_with(base_url):
 				sources.append({"manifest_url": manifest_url, "base_url": base_url.rstrip("/")})
+				paired[manifest_url] = true
 				break
+	for manifest_url in manifest_urls:
+		if paired.has(manifest_url):
+			continue
+		var path: String = manifest_url.split("?")[0]
+		var slash := path.rfind("/")
+		if slash > path.find("://") + 2:
+			sources.append({"manifest_url": manifest_url, "base_url": path.left(slash)})
 	return sources
 
 
 ## Plain GET of bytes (manifests, chunks, thumbnails).
 func fetch_bytes(url: String, timeout := 120.0) -> Dictionary:
 	return await fetch.call({"method": "GET", "url": url, "headers": PackedStringArray(), "timeout": timeout})
+
+
+## GET streamed straight to [param path] (large direct downloads).
+func download_file(url: String, path: String, timeout := 3600.0) -> Dictionary:
+	return await fetch.call({"method": "GET", "url": url, "headers": PackedStringArray(), "timeout": timeout, "download_file": path})
 
 
 # MARK: library actions

@@ -13,6 +13,11 @@ class FakeApi extends RefCounted:
 	var format_versions: Array = []
 	var manifest_bytes := PackedByteArray([1, 2, 3])
 	var add_result := {"ok": true, "error": "", "needs_web": false, "unauthorized": false}
+	## When set, the pointers are a single signed file URL (FBX, glTF…).
+	var direct_url := ""
+	## The listing's additional files (format "additional-files"); none by default.
+	var extra_files: Array = []
+	var download_ok := true
 	var library_calls := 0
 
 	func library(force := false) -> Dictionary:
@@ -36,6 +41,8 @@ class FakeApi extends RefCounted:
 	func listing_format(uid: String, code: String) -> Dictionary:
 		calls.append(["listing_format", uid, code])
 		await Engine.get_main_loop().process_frame
+		if code == "additional-files":
+			return {"ok": not extra_files.is_empty(), "error": "" if extra_files else "HTTP 404", "files": extra_files, "versions": []}
 		return {"ok": true, "error": "", "files": format_files, "versions": format_versions}
 
 	func file_download_info(uid: String, code: String, file_uid: String) -> Dictionary:
@@ -48,8 +55,19 @@ class FakeApi extends RefCounted:
 			return {"ok": false, "error": "401", "unauthorized": true, "build_version": "", "sources": []}
 		if not pointers_ok:
 			return {"ok": false, "error": "rate limited", "unauthorized": false, "build_version": "", "sources": []}
+		if not direct_url.is_empty():
+			return {"ok": true, "error": "", "unauthorized": false, "build_version": "", "sources": [], "download_url": direct_url}
 		return {"ok": true, "error": "", "unauthorized": false, "build_version": "1",
 			"sources": [{"manifest_url": "https://cdn/m?sig", "base_url": "https://cdn"}]}
+
+	func download_file(url: String, path: String, _timeout := 3600.0) -> Dictionary:
+		calls.append(["download_file", url, path])
+		await Engine.get_main_loop().process_frame
+		if download_ok:
+			var f := FileAccess.open(path, FileAccess.WRITE)
+			f.store_string("zip")
+			f.close()
+		return {"ok": download_ok, "status": 200 if download_ok else 404, "body": PackedByteArray(), "error": "" if download_ok else "HTTP 404"}
 
 	func fetch_bytes(url: String, _timeout := 120.0) -> Dictionary:
 		calls.append(["fetch_bytes", url])
@@ -85,6 +103,10 @@ class FakeDownloader extends RefCounted:
 				return {"ok": false, "error": "cancelled", "files_dir": staging, "files": []}
 		if not ok:
 			return {"ok": false, "error": "chunk missing", "files_dir": staging, "files": []}
+		# Like ChunkDownloader: chunks are cached, files are assembled from them.
+		for rel in ["chunks/C0.bin", "files/Content/P/a.uasset"]:
+			DirAccess.make_dir_recursive_absolute(staging.path_join(rel).get_base_dir())
+			FileAccess.open(staging.path_join(rel), FileAccess.WRITE).store_string("x")
 		return {"ok": true, "error": "", "files_dir": staging.path_join("files"), "files": [staging.path_join("files/Content/P/a.uasset")]}
 
 
@@ -96,7 +118,7 @@ class FakeBridge extends RefCounted:
 	var running := 0
 	var max_running := 0
 	var cancelled := false
-	func install_pack(files_dir: String, uproject: String, backup_root := "") -> Dictionary:
+	func install_pack(files_dir: String, uproject: String, backup_root := "", _progress := Callable()) -> Dictionary:
 		calls.append(["install_pack", files_dir, uproject])
 		if not install_ok:
 			return {"ok": false, "error": "install failed", "content_folders": [], "maps": [], "backed_up": 0}
@@ -128,12 +150,17 @@ class FakeImporter extends RefCounted:
 	var import_ok := true
 	func slug(title: String) -> String:
 		return title.to_lower().replace(" ", "_")
-	func import_export(export_dir: String, target_res_dir: String, meta: Dictionary) -> Dictionary:
+	func import_export(export_dir: String, target_res_dir: String, meta: Dictionary, target_abs := "", consume := false, _progress := Callable()) -> Dictionary:
 		calls.append(["import_export", export_dir, target_res_dir, meta])
 		return {"ok": import_ok, "error": "" if import_ok else "import failed", "scene": target_res_dir + "/Overview.tscn"}
-	func extract_zips(dir: String) -> Dictionary:
+	func extract_zips(dir: String, _progress := Callable()) -> Dictionary:
 		calls.append(["extract_zips", dir])
 		return {"ok": true, "error": "", "extracted": 1}
-	func import_direct(files_dir: String, target_res_dir: String, meta: Dictionary) -> Dictionary:
-		calls.append(["import_direct", files_dir, target_res_dir, meta])
+	## Runs on the jobs' background thread: reports progress and lasts a few
+	## frames, so the main thread sees the report.
+	func import_direct(files_dir: String, target_res_dir: String, meta: Dictionary, _target_abs := "", extras: Array = [], progress := Callable()) -> Dictionary:
+		calls.append(["import_direct", files_dir, target_res_dir, meta, extras, OS.get_thread_caller_id() != OS.get_main_thread_id()])
+		if progress.is_valid():
+			progress.call(1, 2, "Copying model.glb")
+		OS.delay_msec(100)
 		return {"ok": import_ok, "error": "" if import_ok else "import failed", "scene": target_res_dir + "/model.glb"}
