@@ -892,6 +892,139 @@ func test_fix_nearest_textures_tree() -> void:
 		DirAccess.remove_absolute(root + "/" + rel)
 
 
+const SHADER_OPACITY := """[gd_resource type="VisualShader" load_steps=4 format=3 uid="uid://copacity0001"]
+
+[sub_resource type="VisualShaderNodeTexture2DParameter" id="VisualShaderNodeTexture2DParameter_mask"]
+parameter_name = "Mask"
+texture_type = 0
+texture_filter = 6
+
+[sub_resource type="VisualShaderNodeTexture" id="VisualShaderNodeTexture_mask"]
+expanded_output_ports = [0]
+texture_type = 0
+source = 5
+
+[sub_resource type="VisualShaderNodeTexture2DParameter" id="VisualShaderNodeTexture2DParameter_albedo"]
+parameter_name = "Albedo"
+
+[sub_resource type="VisualShaderNodeTexture" id="VisualShaderNodeTexture_albedo"]
+source = 5
+
+[resource]
+nodes/fragment/2/node = SubResource("VisualShaderNodeTexture2DParameter_mask")
+nodes/fragment/3/node = SubResource("VisualShaderNodeTexture_mask")
+nodes/fragment/4/node = SubResource("VisualShaderNodeTexture2DParameter_albedo")
+nodes/fragment/5/node = SubResource("VisualShaderNodeTexture_albedo")
+nodes/fragment/connections = PackedInt32Array(2, 0, 3, 2, 3, 1, 0, 1, 3, 4, 0, 3, 4, 0, 5, 2, 5, 0, 0, 0)
+"""
+
+const MATERIAL_OPACITY := """[gd_resource type = "ShaderMaterial" load_steps=4 format=3]
+
+[ext_resource type="Shader" path="res://Shaders/opacity.tres" id="1_s"]
+[ext_resource type="Texture2D" path="res://Foliage/leaf_Mask.png" id="2_m"]
+[ext_resource type="Texture2D" path="res://Foliage/leaf_Albedo.png" id="3_a"]
+
+[resource]
+shader = ExtResource("1_s")
+shader_parameter/Mask = ExtResource("2_m")
+shader_parameter/Albedo = ExtResource("3_a")
+"""
+
+const IMPORT_OPACITY := """[remap]
+
+importer="texture"
+
+[params]
+
+compress/mode=0
+mipmaps/generate=true
+mipmaps/limit=-1
+mipmaps/preserve_alpha_test_coverage=false
+mipmaps/alpha_test_threshold=0.5
+process/channel_remap/red=0
+process/channel_remap/green=1
+process/channel_remap/blue=2
+process/channel_remap/alpha=3
+"""
+
+
+func test_parse_opacity_list() -> void:
+	var listed := Fixes.parse_opacity_list("A/leaf\tR\t0.3333\nA/leaf\tR\t0.5\nA/both\tR\t0.5\nA/both\tG\t0.5\n/Engine/x\tA\t0.5\nbad line\n")
+	assert_eq(listed.size(), 3)
+	assert_eq(listed["A/leaf"].channel, "R")
+	assert_eq(listed["A/leaf"].clip, 0.3333, "the lowest clip")
+	assert_eq(listed["A/both"].channel, "", "two channels: left alone")
+	assert_true(listed.has("Engine/x"))
+
+
+func test_opacity_import_text() -> void:
+	var red := Fixes.opacity_import_text(IMPORT_OPACITY, "R", 0.3333)
+	assert_contains(red, "mipmaps/preserve_alpha_test_coverage=true\nmipmaps/alpha_test_threshold=0.3333\n")
+	assert_contains(red, "process/channel_remap/red=3\nprocess/channel_remap/green=1\nprocess/channel_remap/blue=2\nprocess/channel_remap/alpha=0\n", "R swapped with alpha")
+	assert_eq(Fixes.opacity_import_text(red, "R", 0.3333), red, "idempotent")
+	var alpha := Fixes.opacity_import_text(IMPORT_OPACITY, "A", 0.5)
+	assert_contains(alpha, "process/channel_remap/red=0\nprocess/channel_remap/green=1\nprocess/channel_remap/blue=2\nprocess/channel_remap/alpha=3\n", "alpha: no swap")
+	var bare := Fixes.opacity_import_text("[params]\n\nmipmaps/generate=true\n", "G", 0.5)
+	assert_contains(bare, "process/channel_remap/green=3\n", "missing keys are added")
+	assert_contains(bare, "process/channel_remap/alpha=1\n")
+
+
+func test_opacity_swap_text() -> void:
+	var result := Fixes.opacity_swap_text(SHADER_OPACITY, "Mask", "R")
+	assert_true(result.ok)
+	assert_contains(result.text, "PackedInt32Array(2, 0, 3, 2, 3, 4, 0, 1, 3, 1, 0, 3, 4, 0, 5, 2, 5, 0, 0, 0)", "R and alpha ports of the Mask sampler swapped, others untouched")
+	assert_contains(result.text, "[sub_resource type=\"VisualShaderNodeTexture\" id=\"VisualShaderNodeTexture_mask\"]\n%s = \"R\"\n" % Fixes.OPACITY_SWAP_META)
+	assert_eq(Fixes.opacity_swap_text(result.text, "Mask", "R").text, result.text, "idempotent")
+	assert_false(Fixes.opacity_swap_text(SHADER_OPACITY, "Albedo", "R").ok, "a node reading the whole color can't be swapped")
+	assert_false(Fixes.opacity_swap_text(SHADER_OPACITY, "Missing", "R").ok)
+	var path := "user://godotfab_test_opacity.tres"
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(result.text)
+	f.close()
+	var vs: VisualShader = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var code := vs.get_code()
+	assert_contains(code, "ALPHA = n_out3p4;", "alpha output now reads the swapped channel")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_fix_opacity_textures_tree() -> void:
+	var root := ProjectSettings.globalize_path("user://godotfab_test_opacity")
+	for dir in ["Shaders", "Materials", "Foliage"]:
+		DirAccess.make_dir_recursive_absolute(root + "/" + dir)
+	var write := func(rel: String, text: String) -> void:
+		var f := FileAccess.open(root + "/" + rel, FileAccess.WRITE)
+		f.store_string(text)
+		f.close()
+	write.call("Shaders/opacity.tres", SHADER_OPACITY)
+	write.call("Materials/leaf.tres", MATERIAL_OPACITY)
+	write.call("Foliage/leaf_Mask.png.import", IMPORT_OPACITY)
+	write.call("Foliage/leaf_Albedo.png.import", IMPORT_OPACITY)
+	var files: Array[String] = [root + "/Shaders/opacity.tres", root + "/Materials/leaf.tres",
+		root + "/Foliage/leaf_Mask.png.import", root + "/Foliage/leaf_Albedo.png.import"]
+	assert_eq(Fixes.fix_opacity_textures(root, files), 0, "no list, nothing changes")
+	write.call(Fixes.OPACITY_TEXTURES_FILE, "Foliage/leaf_Mask\tR\t0.3333\nFoliage/leaf_Albedo\tA\t0.5\n")
+	assert_eq(Fixes.fix_opacity_textures(root, files), 2)
+	assert_contains(FileAccess.get_file_as_string(root + "/Foliage/leaf_Mask.png.import"), "process/channel_remap/alpha=0\n")
+	assert_contains(FileAccess.get_file_as_string(root + "/Foliage/leaf_Albedo.png.import"), "mipmaps/preserve_alpha_test_coverage=true\nmipmaps/alpha_test_threshold=0.5\n")
+	var shader := FileAccess.get_file_as_string(root + "/Shaders/opacity.tres")
+	assert_contains(shader, "3, 4, 0, 1, 3, 1, 0, 3")
+	assert_eq(Fixes.fix_opacity_textures(root, files), 0, "idempotent")
+	assert_eq(FileAccess.get_file_as_string(root + "/Shaders/opacity.tres"), shader, "ports swapped only once")
+	# A parameter that also gets a texture that isn't swapped: leave the R texture alone.
+	write.call("Shaders/opacity.tres", SHADER_OPACITY)
+	write.call("Foliage/leaf_Mask.png.import", IMPORT_OPACITY)
+	write.call("Materials/other.tres", MATERIAL_OPACITY.replace("Foliage/leaf_Mask.png", "Foliage/other_Mask.png"))
+	files.append(root + "/Materials/other.tres")
+	Fixes.fix_opacity_textures(root, files)
+	assert_eq(FileAccess.get_file_as_string(root + "/Foliage/leaf_Mask.png.import"), IMPORT_OPACITY, "mixed parameter: texture untouched")
+	assert_eq(FileAccess.get_file_as_string(root + "/Shaders/opacity.tres"), SHADER_OPACITY, "mixed parameter: shader untouched")
+	for rel in ["Shaders/opacity.tres", "Materials/leaf.tres", "Materials/other.tres", "Foliage/leaf_Mask.png.import",
+			"Foliage/leaf_Albedo.png.import", Fixes.OPACITY_TEXTURES_FILE]:
+		DirAccess.remove_absolute(root + "/" + rel)
+	for rel in ["Shaders", "Materials", "Foliage", ""]:
+		DirAccess.remove_absolute(root + "/" + rel)
+
+
 func test_fix_world_normal_axes() -> void:
 	var expr := "\"//Vertex/PixelNormalWS:255(null)\noutput0 = ( INV_VIEW_MATRIX * vec4( NORMAL, 0.0)).xyz;\n\""
 	var vertex := "\"//Vertex/PixelNormalWS:12(null)\noutput0 = ( MODEL_MATRIX * vec4( NORMAL, 0.0)).xyz;\n\""

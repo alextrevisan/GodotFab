@@ -167,6 +167,15 @@ branch, the parent index in the alpha bits) then blend neighbouring texels where
 hair off the texel center, and Spruce Forest's low trees threw their lower branches off the
 trunk. GodotFab sets the parameters that receive those textures to nearest.
 
+It also writes `godotfab_opacity_textures.txt`: for every masked material, the texture
+channel that feeds Opacity Mask and the clip value (`<texture>\t<R|G|B|A|RGB>\t<clip>`),
+found with `UMaterial::RecursiveGetExpressionChain` (the public `GetTexturesInPropertyChain`
+does not follow Material Attributes). Mipmaps average the opacity below the clip value and
+alpha tested foliage loses its leaves at a distance. GodotFab imports those textures with
+`mipmaps/preserve_alpha_test_coverage` at the clip value; when the opacity is in R, G or B
+(European Beech's `Mask` uses R), that channel is swapped with alpha on import and the two
+output ports of the shader's texture nodes are swapped back.
+
 World Partition maps (`*_WP`, Megascans samples) keep their actors in
 `__ExternalActors__`, which `LoadMap` does not load: the commandlet loads every actor of
 the world with an `FLoaderAdapterShape` covering the whole world (the editor's "Load All").

@@ -39,6 +39,14 @@
 #include "LandscapeProxy.h"
 #include "Engine/Texture.h"
 #include "UObject/UObjectIterator.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionTextureBase.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "Materials/MaterialExpressionTextureObject.h"
+#include "Materials/MaterialExpressionTextureObjectParameter.h"
 
 #include "UTXModule.h"
 #include "BaseScene.h"
@@ -488,6 +496,112 @@ namespace
 		FFileHelper::SaveStringArrayToFile( Lines, *( Output + TEXT( "godotfab_nearest_textures.txt" ) ) );
 		UE_LOG( LogTemp, Display, TEXT( "GodotFab: %d textures with Nearest filtering" ), Lines.Num() );
 	}
+
+	// Exposes UMaterial::RecursiveGetExpressionChain (protected): the public
+	// GetTexturesInPropertyChain does not follow materials that use Material Attributes.
+	struct FMaterialChainAccess : UMaterial
+	{
+		using UMaterial::RecursiveGetExpressionChain;
+	};
+
+	FString TextureExportPath( UTexture* Tex )
+	{
+		FString Path = Tex->GetOutermost()->GetName();
+		if( Path.StartsWith( TEXT( "/Game/" ) ) )
+			Path.RightChopInline( 6 );
+		else
+			Path.RightChopInline( 1 );
+		return Path;
+	}
+
+	// The texture a sample node reads in Material: the instance's value of its parameter (or
+	// of the Texture Object Parameter wired to it), else the node's own texture.
+	UTexture* SampledTexture( UMaterialInterface* Material, UMaterialExpressionTextureBase* Sample )
+	{
+		FName Param;
+		if( UMaterialExpressionTextureSampleParameter* P = Cast<UMaterialExpressionTextureSampleParameter>( Sample ) )
+			Param = P->ParameterName;
+		else if( UMaterialExpressionTextureSample* S = Cast<UMaterialExpressionTextureSample>( Sample ) )
+		{
+			if( UMaterialExpressionTextureSampleParameter* P2 = Cast<UMaterialExpressionTextureSampleParameter>( S->TextureObject.Expression ) )
+			{
+				Param = P2->ParameterName;
+				Sample = P2;
+			}
+			else if( UMaterialExpressionTextureBase* O = Cast<UMaterialExpressionTextureBase>( S->TextureObject.Expression ) )
+				Sample = O;
+		}
+		UTexture* Tex = nullptr;
+		if( !Param.IsNone() && Material->GetTextureParameterValue( Param, Tex ) && Tex )
+			return Tex;
+		return Sample->Texture;
+	}
+
+	// Alpha tested foliage loses its leaves at a distance: mipmaps average the opacity
+	// below the clip value. Lists, for every masked material, the texture channel that
+	// feeds Opacity Mask and the clip value ("<texture>\t<R|G|B|A>\t<clip>"), so the
+	// GodotFab importer can preserve alpha test coverage in that texture's mipmaps.
+	void WriteOpacityTextures( const FString& Output )
+	{
+		static const TCHAR* Channels[] = { TEXT( "R" ), TEXT( "G" ), TEXT( "B" ), TEXT( "A" ) };
+		auto Chain = &FMaterialChainAccess::RecursiveGetExpressionChain;
+		TArray< FString > Lines;
+		for( TObjectIterator< UMaterialInterface > It; It; ++It )
+		{
+			UMaterialInterface* Material = *It;
+			if( !Material || Material->GetOutermost() == GetTransientPackage() || Material->GetBlendMode() != BLEND_Masked )
+				continue;
+			UMaterial* Base = Material->GetMaterial();
+			if( !Base )
+				continue;
+			FExpressionInput* Start = Base->GetExpressionInputForProperty( Base->bUseMaterialAttributes ? MP_MaterialAttributes : MP_OpacityMask );
+			if( !Start || !Start->Expression )
+				continue;
+			FStaticParameterSet Statics;
+			Material->GetStaticParameterValues( Statics );
+			TSet< FExpressionInput* > Processed;
+			Processed.Add( Start );
+			TSet< UMaterialExpression* > Expressions;
+			( Base->*Chain )( Start->Expression, Processed, Expressions, &Statics, ERHIFeatureLevel::Num, EMaterialQualityLevel::Num,
+				ERHIShadingPath::Num, SF_Pixel, MP_OpacityMask, true );
+			// Channel each texture sample is read through by the chain: output 1..4 is R..A,
+			// a masked output 0 with a single channel counts as that channel.
+			TMap< UMaterialExpressionTextureBase*, TSet< int32 > > Reads;
+			for( UMaterialExpression* Expression : Expressions )
+			{
+				if( !Expression )
+					continue;
+				for( FExpressionInputIterator In{ Expression }; In; ++In )
+				{
+					UMaterialExpressionTextureBase* Sample = Cast<UMaterialExpressionTextureBase>( In->Expression );
+					// Texture Object nodes only pass the texture on to a sample node.
+					if( !Sample || !Expressions.Contains( Sample ) || Sample->IsA<UMaterialExpressionTextureObject>() || Sample->IsA<UMaterialExpressionTextureObjectParameter>() )
+						continue;
+					int32 Channel = -1;
+					if( In->OutputIndex >= 1 && In->OutputIndex <= 4 )
+						Channel = In->OutputIndex - 1;
+					else if( In->Mask && In->MaskR + In->MaskG + In->MaskB + In->MaskA == 1 )
+						Channel = In->MaskR ? 0 : In->MaskG ? 1 : In->MaskB ? 2 : 3;
+					Reads.FindOrAdd( Sample ).Add( Channel );
+				}
+			}
+			const float Clip = Material->GetOpacityMaskClipValue();
+			for( const TPair< UMaterialExpressionTextureBase*, TSet< int32 > >& Read : Reads )
+			{
+				UTexture* Tex = SampledTexture( Material, Read.Key );
+				if( !Tex )
+					continue;
+				for( int32 Channel : Read.Value )
+				{
+					// -1: read as a color, the importer leaves the texture alone.
+					Lines.AddUnique( FString::Printf( TEXT( "%s\t%s\t%.4f" ), *TextureExportPath( Tex ), Channel < 0 ? TEXT( "RGB" ) : Channels[ Channel ], Clip ) );
+				}
+			}
+		}
+		Lines.Sort();
+		FFileHelper::SaveStringArrayToFile( Lines, *( Output + TEXT( "godotfab_opacity_textures.txt" ) ) );
+		UE_LOG( LogTemp, Display, TEXT( "GodotFab: %d texture channels feed Opacity Mask" ), Lines.Num() );
+	}
 }
 
 UUnrealToGodotCommandlet::UUnrealToGodotCommandlet()
@@ -704,6 +818,7 @@ int32 UUnrealToGodotCommandlet::Main( const FString& Params )
 		WriteGodotEnvironment( World, Output );
 
 	WriteNearestTextures( Output );
+	WriteOpacityTextures( Output );
 
 	FString Done = FString::Printf( TEXT( "scene=%s\nworld=%s\nmap=%s\ncontent=%s\n" ), *MainScene, *WorldName, *MapPath, *ContentPath );
 	if( !FFileHelper::SaveStringToFile( Done, *( Output + TEXT( "godotfab_done.txt" ) ) ) )

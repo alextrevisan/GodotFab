@@ -69,6 +69,11 @@ extends RefCounted
 ##    in the alpha bits); blended texels send branches flying. Parameters that
 ##    get a texture the commandlet lists as Nearest are set to nearest; see
 ##    fix_nearest_textures.
+## 16. Alpha tested foliage loses its leaves at a distance: mipmaps average the
+##    opacity below the clip value. Textures the commandlet lists as feeding
+##    Opacity Mask are imported with alpha test coverage preserved; when the
+##    opacity is in R, G or B, that channel is swapped with alpha on import and
+##    back in the shader; see fix_opacity_textures.
 
 const Log = preload("res://addons/godotfab/log.gd")
 
@@ -155,6 +160,9 @@ static func fix_export_tree(root: String) -> Dictionary:
 	var nearest_fixed := fix_nearest_textures(root, files)
 	if nearest_fixed > 0:
 		Log.info("Texture parameters sampled with nearest filtering (as in Unreal): %d" % nearest_fixed)
+	var opacity_fixed := fix_opacity_textures(root, files)
+	if opacity_fixed > 0:
+		Log.info("Opacity mask textures imported with alpha test coverage preserved: %d" % opacity_fixed)
 	# UnrealToGodot swaps a material that fails to compile in Unreal for a
 	# white "shader didn't compile" placeholder named "<MI>_Didnt_Compile_<n>".
 	var failed := {}
@@ -276,6 +284,270 @@ static func fix_nearest_textures(root: String, files: Array[String]) -> int:
 			_write(path, result.text)
 			fixed += result.count
 	return fixed
+
+
+## File the commandlet writes next to the export: "<texture>\t<channel>\t<clip>"
+## per line (texture as in NEAREST_TEXTURES_FILE, channel R, G, B, A or RGB),
+## for every texture channel that feeds the Opacity Mask of a masked material.
+const OPACITY_TEXTURES_FILE := "godotfab_opacity_textures.txt"
+## Expanded output port of VisualShaderNodeTexture for each channel.
+const CHANNEL_PORTS := {"R": 1, "G": 2, "B": 3, "A": 4}
+## Godot's process/channel_remap value (and key) for each channel.
+const CHANNEL_REMAP := {"R": 0, "G": 1, "B": 2, "A": 3}
+const CHANNEL_REMAP_KEYS := {"R": "red", "G": "green", "B": "blue", "A": "alpha"}
+## Marks a texture node whose R/G/B port was already swapped with alpha.
+const OPACITY_SWAP_META := "metadata/godotfab_opacity_swap"
+const TEXTURE_SOURCE_PORT := 5
+
+
+## Fix 16: alpha tested foliage loses its leaves at a distance, the mipmaps
+## average the opacity below the clip value. Godot can keep the alpha test
+## coverage of each mipmap (mipmaps/preserve_alpha_test_coverage), but only for
+## the alpha channel. A texture listed in OPACITY_TEXTURES_FILE with channel A
+## just gets that option. One with R, G or B gets that channel swapped with
+## alpha on import (the remap runs before the mipmaps), and every texture node
+## that samples it through a shader parameter gets its two output ports
+## swapped back. A texture is left alone when that is not safe: read as a whole
+## color, listed with two channels, set directly on a shader node, or bound to a
+## parameter that also receives textures that are not swapped the same way.
+## Returns the number of .import files changed.
+static func fix_opacity_textures(root: String, files: Array[String]) -> int:
+	var list := root.path_join(OPACITY_TEXTURES_FILE)
+	if not FileAccess.file_exists(list):
+		return 0
+	var listed := parse_opacity_list(FileAccess.get_file_as_string(list))
+	if listed.is_empty():
+		return 0
+	# .import files of mipmapped textures, by path relative to the root without extension.
+	var imports := {}
+	for path in files:
+		if not path.ends_with(".import"):
+			continue
+		var rel := path.substr(root.length()).trim_prefix("/").trim_suffix(".import").get_basename()
+		if listed.has(_listed_key(rel, listed)) and FileAccess.get_file_as_string(path).contains("mipmaps/generate=true"):
+			imports[_listed_key(rel, listed)] = path
+	# Texture bindings: shader file -> parameter -> [listed key or "" for others].
+	var bindings := {}
+	var direct := {}
+	var shaders := {}
+	var bound := {}
+	for path in files:
+		if not path.ends_with(".tres") and not path.ends_with(".tscn"):
+			continue
+		var text := FileAccess.get_file_as_string(path)
+		var is_shader := text.begins_with("[gd_resource type=\"VisualShader\"")
+		if is_shader:
+			shaders[path.get_file()] = path
+		var shader_file := "" if is_shader or not path.ends_with(".tres") or not text.contains("ShaderMaterial") else material_shader_file(text)
+		if shader_file.is_empty():
+			# Set on a shader node, or used outside a ShaderMaterial: no port to swap back.
+			for res_path in _ext_resource_paths(text).values():
+				direct[_listed_key(str(res_path).trim_prefix("res://").get_basename(), listed)] = true
+			continue
+		var ext_paths := _ext_resource_paths(text)
+		var param_re := RegEx.create_from_string("(?m)^shader_parameter/(\\w+) = ExtResource\\(\"([^\"]+)\"\\)")
+		for m in param_re.search_all(text):
+			if not ext_paths.has(m.get_string(2)):
+				continue
+			var key := _listed_key(str(ext_paths[m.get_string(2)]).trim_prefix("res://").get_basename(), listed)
+			if not bindings.has(shader_file):
+				bindings[shader_file] = {}
+			if not bindings[shader_file].has(m.get_string(1)):
+				bindings[shader_file][m.get_string(1)] = []
+			if not key in bindings[shader_file][m.get_string(1)]:
+				bindings[shader_file][m.get_string(1)].append(key)
+			bound[key] = true
+	# Textures that can be fixed; R/G/B ones need every parameter they reach swappable.
+	var valid := {}
+	for key in listed:
+		var channel: String = listed[key].channel
+		if not channel in CHANNEL_PORTS or not imports.has(key):
+			continue
+		if channel != "A" and (direct.has(key) or not bound.has(key)):
+			continue
+		valid[key] = channel
+	var swappable_cache := {}
+	var changed := true
+	while changed:
+		changed = false
+		for shader_file in bindings:
+			for param in bindings[shader_file]:
+				var keys: Array = bindings[shader_file][param]
+				var channels := {}
+				var ok := true
+				for key in keys:
+					if valid.has(key):
+						channels[valid[key]] = true
+					elif key != "":
+						ok = false
+				if channels.is_empty() or channels.has("A") and channels.size() == 1:
+					# Alpha needs no port swap: other textures on the parameter don't matter.
+					continue
+				var channel: String = channels.keys()[0]
+				if ok and not keys.has("") and channels.size() == 1:
+					var cache_key: String = shader_file + "\t" + param
+					if not swappable_cache.has(cache_key):
+						swappable_cache[cache_key] = shaders.has(shader_file) and opacity_swap_text(FileAccess.get_file_as_string(shaders[shader_file]), param, channel).ok
+					ok = swappable_cache[cache_key]
+				else:
+					ok = false
+				if not ok:
+					for key in keys:
+						if valid.has(key):
+							valid.erase(key)
+							changed = true
+	# Shader ports first, then the imports.
+	for shader_file in bindings:
+		if not shaders.has(shader_file):
+			continue
+		var text := FileAccess.get_file_as_string(shaders[shader_file])
+		var fixed_text := text
+		for param in bindings[shader_file]:
+			var key: String = bindings[shader_file][param][0]
+			if not valid.has(key) or valid[key] == "A":
+				continue
+			fixed_text = opacity_swap_text(fixed_text, param, valid[key]).text
+		if fixed_text != text:
+			_write(shaders[shader_file], fixed_text)
+	var fixed := 0
+	for key in valid:
+		var text := FileAccess.get_file_as_string(imports[key])
+		var fixed_import := opacity_import_text(text, valid[key], listed[key].clip)
+		if fixed_import != text:
+			_write(imports[key], fixed_import)
+			fixed += 1
+	return fixed
+
+
+## {texture key: {channel: String, clip: float}} from an OPACITY_TEXTURES_FILE
+## text. A texture listed with two channels gets channel "" (left alone); with
+## two clip values, the lowest one.
+static func parse_opacity_list(text: String) -> Dictionary:
+	var out := {}
+	for line in text.split("\n", false):
+		var parts := line.strip_edges().split("\t")
+		if parts.size() < 3 or parts[0].is_empty():
+			continue
+		var key := parts[0].trim_prefix("/")
+		var clip := parts[2].to_float()
+		if not out.has(key):
+			out[key] = {"channel": parts[1], "clip": clip}
+			continue
+		if out[key].channel != parts[1]:
+			out[key].channel = ""
+		out[key].clip = minf(out[key].clip, clip)
+	return out
+
+
+## The key of [param listed] a texture path (res:// relative, no extension)
+## matches, or "" when none does.
+static func _listed_key(bare: String, listed: Dictionary) -> String:
+	if listed.has(bare):
+		return bare
+	for key in listed:
+		if bare.ends_with("/" + str(key)):
+			return key
+	return ""
+
+
+## Swaps output port CHANNEL_PORTS[channel] with the alpha port of every
+## texture node that samples parameter [param param] of a VisualShader text.
+## Returns {text, ok: bool}; ok is false (text unchanged) when the parameter
+## also feeds anything else, or a node reads the whole color.
+static func opacity_swap_text(text: String, param: String, channel: String) -> Dictionary:
+	var fail := {"text": text, "ok": false}
+	var header := RegEx.create_from_string("\\[sub_resource type=\"([^\"]+)\" id=\"([^\"]+)\"\\]\n")
+	var types := {}
+	var blocks := {}
+	var param_ids := {}
+	for m in header.search_all(text):
+		var end := text.find("\n[", m.get_end())
+		end = end if end >= 0 else text.length()
+		var block := text.substr(m.get_end(), end - m.get_end())
+		types[m.get_string(2)] = m.get_string(1)
+		blocks[m.get_string(2)] = [m.get_end(), end]
+		if m.get_string(1) in TEXTURE_PARAMETER_TYPES and ("\n" + block + "\n").contains("\nparameter_name = \"%s\"\n" % param):
+			param_ids[m.get_string(2)] = true
+	if param_ids.is_empty():
+		return fail
+	var node_re := RegEx.create_from_string("(?m)^nodes/(\\w+)/(\\d+)/node = SubResource\\(\"([^\"]+)\"\\)")
+	var node_ids := {}
+	for m in node_re.search_all(text):
+		node_ids[m.get_string(1) + "/" + m.get_string(2)] = m.get_string(3)
+	var conn_re := RegEx.create_from_string("(?m)^nodes/(\\w+)/connections = PackedInt32Array\\(([^)]*)\\)")
+	var port := int(CHANNEL_PORTS[channel])
+	var swaps := {}
+	var stages := {}
+	for m in conn_re.search_all(text):
+		var stage := m.get_string(1)
+		var values := m.get_string(2).split(",", false)
+		var ints: Array[int] = []
+		for v in values:
+			ints.append(int(v))
+		stages[stage] = [m, ints]
+		for i in range(0, ints.size() - 3, 4):
+			var from_id: String = node_ids.get(stage + "/" + str(ints[i]), "")
+			if not param_ids.has(from_id):
+				continue
+			var to_key := stage + "/" + str(ints[i + 2])
+			var to_id: String = node_ids.get(to_key, "")
+			if types.get(to_id, "") != "VisualShaderNodeTexture" or ints[i + 3] != 2:
+				return fail
+			var tex_block := text.substr(blocks[to_id][0], blocks[to_id][1] - blocks[to_id][0])
+			if not tex_block.contains("source = %d" % TEXTURE_SOURCE_PORT):
+				return fail
+			swaps[to_key] = to_id
+	if swaps.is_empty():
+		return fail
+	var out := text
+	var done := {}
+	for stage in stages:
+		var m: RegExMatch = stages[stage][0]
+		var ints: Array[int] = stages[stage][1]
+		for i in range(0, ints.size() - 3, 4):
+			var key: String = stage + "/" + str(ints[i])
+			if not swaps.has(key):
+				continue
+			if ints[i + 1] == 0:
+				return fail
+			if text.substr(blocks[swaps[key]][0], blocks[swaps[key]][1] - blocks[swaps[key]][0]).contains(OPACITY_SWAP_META):
+				continue
+			if ints[i + 1] == port:
+				ints[i + 1] = 4
+			elif ints[i + 1] == 4:
+				ints[i + 1] = port
+			done[swaps[key]] = true
+		var joined := PackedStringArray()
+		for v in ints:
+			joined.append(str(v))
+		out = out.replace(m.get_string(0), "nodes/%s/connections = PackedInt32Array(%s)" % [stage, ", ".join(joined)])
+	for id in done:
+		out = out.replace("[sub_resource type=\"VisualShaderNodeTexture\" id=\"%s\"]\n" % id,
+			"[sub_resource type=\"VisualShaderNodeTexture\" id=\"%s\"]\n%s = \"%s\"\n" % [id, OPACITY_SWAP_META, channel])
+	return {"text": out, "ok": true}
+
+
+## The .import of an opacity mask texture: alpha test coverage preserved in the
+## mipmaps at [param clip]; for R, G or B, that channel swapped with alpha.
+static func opacity_import_text(text: String, channel: String, clip: float) -> String:
+	var values := {
+		"mipmaps/preserve_alpha_test_coverage": "true",
+		"mipmaps/alpha_test_threshold": str(snappedf(clip, 0.0001)),
+	}
+	for c in CHANNEL_REMAP_KEYS:
+		values["process/channel_remap/" + CHANNEL_REMAP_KEYS[c]] = str(CHANNEL_REMAP[c])
+	if channel != "A":
+		values["process/channel_remap/" + CHANNEL_REMAP_KEYS[channel]] = str(CHANNEL_REMAP["A"])
+		values["process/channel_remap/alpha"] = str(CHANNEL_REMAP[channel])
+	var out := text
+	for key in values:
+		var re := RegEx.create_from_string("(?m)^" + key + "=.*$")
+		var line: String = key + "=" + values[key]
+		if re.search(out):
+			out = re.sub(out, line)
+		else:
+			out = out.trim_suffix("\n") + "\n" + line + "\n"
+	return out
 
 
 ## Shader parameter names a ShaderMaterial text fills with a texture from
