@@ -2,6 +2,8 @@
 
 *[English](README.md) | Português*
 
+**Primeira vez? Comece pelo guia de [Primeiros passos](docs/GETTING_STARTED-PTBR.md).**
+
 Addon para Godot 4.8 que traz a loja **Fab** (fab.com) para dentro do editor, no estilo do
 addon BlenderKit: uma aba **Fab** na tela principal com busca, filtros, grade de thumbnails,
 diálogo de detalhes e botão **Download**. Os assets são baixados da sua biblioteca Fab e
@@ -13,7 +15,10 @@ Três caminhos de importação, escolhidos pelo formato que a listagem oferece:
 | --- | --- |
 | glTF (.glb) | Baixa e copia o modelo e as texturas; o Godot importa direto. |
 | FBX | Idem (o Godot importa FBX nativamente desde o 4.3). |
-| Unreal Engine (.uasset) | Baixa o pacote, instala no projeto Unreal configurado, roda o **UnrealToGodot** em modo headless (commandlet) e importa o projeto Godot gerado. |
+| Unreal Engine (.uasset), **só Linux** | Baixa o pacote, instala no projeto Unreal configurado, roda o **UnrealToGodot** em modo headless (commandlet) e importa o projeto Godot gerado. |
+
+glTF e FBX funcionam em qualquer sistema (Linux, Windows e macOS). **O caminho Unreal só funciona
+no Linux por enquanto**: o instalador do commandlet e a verificação do plugin são só para Linux.
 
 O formato preferido fica em *Settings → Preferred format* (padrão: glTF, depois FBX, depois Unreal).
 
@@ -27,7 +32,7 @@ O formato preferido fica em *Settings → Preferred format* (padrão: glTF, depo
   aceitam a sessão do site, não o token do launcher): clique em *Add to My Library* lá e depois
   em *Refresh library* no Godot; um download que estava esperando continua sozinho. Assets pagos
   precisam ser comprados no fab.com.
-- Para o caminho Unreal: Unreal Engine 5.8 instalado e um projeto Unreal com o plugin
+- Para o caminho Unreal (só Linux): Unreal Engine 5.8 para Linux instalado e um projeto Unreal com o plugin
   **UnrealToGodot** (Ciprian Stanciu) compilado com o commandlet da pasta `addons/godotfab/unreal/`.
   Sem isso, os formatos glTF/FBX continuam funcionando.
 
@@ -43,11 +48,10 @@ O formato preferido fica em *Settings → Preferred format* (padrão: glTF, depo
 ### Commandlet do UnrealToGodot (só para o caminho Unreal)
 
 O UnrealToGodot exporta pelo botão da toolbar do editor Unreal. Para automatizar, o addon
-adiciona um commandlet ao plugin. Com o engine e o projeto nos caminhos padrão:
+adiciona um commandlet ao plugin. Informe a pasta do engine e o projeto Unreal:
 
 ```sh
-addons/godotfab/unreal/install_commandlet.sh "/run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4" \
-  "/run/media/alex/S Backup L/GitHub/UnrealSurvival/UnrealSurvival.uproject"
+addons/godotfab/unreal/install_commandlet.sh "<engine_dir>" "<project_dir>/<Project>.uproject"
 ```
 
 O script copia `addons/godotfab/unreal/UnrealToGodotCommandlet/*` para `Plugins/UnrealToGodot/Source/UnrealToGodot/Public/`,
@@ -167,13 +171,17 @@ plugin Fab do Unreal usam); podem mudar sem aviso. Estão isolados em `addons/go
 ## Testes
 
 ```sh
-GODOT=~/Documents/Godot/Godot_v4.8-beta2_mono_linux_x86_64/Godot_v4.8-beta2_mono_linux.x86_64
+GODOT=/path/to/Godot_v4.8_mono_linux.x86_64
 "$GODOT" --headless --path . -s tests/run_tests.gd            # unitários (sem rede)
 "$GODOT" --headless --path . -s tests/run_tests.gd -- jobs    # só um arquivo
 GODOTFAB_SMOKE=1 "$GODOT" --headless --editor --path .        # smoke da UI contra a Fab real
 ```
 
 As fixtures de manifesto são geradas por `python3 -I tests/fixtures/make_manifest_fixtures.py`.
+
+## Licença
+
+[MIT](LICENSE).
 
 ## Créditos
 

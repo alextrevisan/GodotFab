@@ -265,12 +265,12 @@ GPU; use `-NullRHI` only if there is no usable GPU, texture baking will then fai
 
 ### Verified command line
 
-Tested on 2026-11-06 with UE 5.8.4 (installed Linux build), project `UnrealSurvival`
-(Blueprint-only) and the Fab pack `/Game/Laundromat/VOL2_Laundry`:
+Tested on 2026-11-06 with UE 5.8.4 (installed Linux build), a Blueprint-only
+project and the Fab pack `/Game/Laundromat/VOL2_Laundry`:
 
 ```sh
-"/run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4/Engine/Binaries/Linux/UnrealEditor-Cmd" \
-  "/run/media/alex/S Backup L/GitHub/UnrealSurvival/UnrealSurvival.uproject" \
+"<engine_dir>/Engine/Binaries/Linux/UnrealEditor-Cmd" \
+  "<project_dir>/<Project>.uproject" \
   -run=UnrealToGodot.UnrealToGodot \
   -ContentPath=/Game/Laundromat/VOL2_Laundry \
   -Map=/Game/Laundromat/VOL2_Laundry/Maps/Overview \
