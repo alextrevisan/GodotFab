@@ -1048,3 +1048,54 @@ func test_fixed_power_shader_code() -> void:
 	assert_contains(code, "pow(max(n_out2p0, vec3(0.0)), vec3(5.000000, 5.000000, 5.000000))", "the connected base is clamped")
 	assert_contains(code, "n_out3p0 + n_out2p0", "the result still feeds the next node")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_fix_alpha_to_coverage() -> void:
+	var masked := "[gd_resource type=\"VisualShader\" format=3]\n\n[resource]\nmodes/cull = 2\nnodes/fragment/connections = PackedInt32Array(2, 0, 0, 1, 3, 0, 0, 19)\n"
+	var result := Fixes.fix_alpha_to_coverage(masked)
+	assert_eq(result.count, 1)
+	assert_contains(result.text, "[resource]\nflags/alpha_to_coverage = true\nmodes/cull = 2\n")
+	assert_eq(Fixes.fix_alpha_to_coverage(result.text).count, 0, "idempotent")
+	var opaque := masked.replace("3, 0, 0, 19", "3, 0, 0, 3")
+	assert_eq(Fixes.fix_alpha_to_coverage(opaque).text, opaque, "no alpha scissor: untouched")
+	var canvas := masked.replace("[resource]\n", "[resource]\nmode = 1\n")
+	assert_eq(Fixes.fix_alpha_to_coverage(canvas).count, 0, "canvas item shaders untouched")
+	var path := "user://godotfab_test_a2c.tres"
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(result.text.replace("PackedInt32Array(2, 0, 0, 1, 3, 0, 0, 19)", "PackedInt32Array()"))
+	f.close()
+	var vs: VisualShader = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	assert_contains(vs.get_code(), "alpha_to_coverage;", "Godot reads the flag")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_fix_alpha_test_distance() -> void:
+	var masked := "[gd_resource type=\"VisualShader\" format=3]\n\n[sub_resource type=\"VisualShaderNodeFloatConstant\" id=\"c\"]\nconstant = 0.3333\n\n[resource]\nnodes/fragment/2/node = SubResource(\"c\")\nnodes/fragment/2/position = Vector2(-240, 0)\nnodes/vertex/7/node = SubResource(\"c\")\nnodes/fragment/connections = PackedInt32Array(2, 0, 0, 1, 2, 0, 0, 19)\n"
+	var result := Fixes.fix_alpha_test_distance(masked)
+	assert_eq(result.count, 1)
+	assert_contains(result.text, "PackedInt32Array(2, 0, 0, 1, 2, 0, 8, 0, 8, 0, 0, 19)", "threshold goes through the new node (id above every stage's ids)")
+	assert_eq(Fixes.fix_alpha_test_distance(result.text).count, 0, "idempotent")
+	var opaque := masked.replace(", 2, 0, 0, 19", "")
+	assert_eq(Fixes.fix_alpha_test_distance(opaque).text, opaque, "no alpha scissor: untouched")
+	var path := "user://godotfab_test_alpha_distance.tres"
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(result.text)
+	f.close()
+	var vs: VisualShader = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var code := vs.get_code()
+	assert_contains(code, "n_out8p0 = n_out2p0 * mix(1.0, 0.65, smoothstep(10.0, 45.0, length(VERTEX)));")
+	assert_contains(code, "ALPHA_SCISSOR_THRESHOLD = n_out8p0;")
+	var shader := Shader.new()
+	shader.code = code
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_foliage_lod_bias_text() -> void:
+	var scene := "[gd_scene format=3]\n\n[ext_resource type=\"Material\" path=\"res://M/MI_Leaf.tres\" id=\"2_a\"]\n[ext_resource type=\"Material\" path=\"res://M/MI_Rock.tres\" id=\"3_b\"]\n\n[node name=\"Tree\" instance=ExtResource(\"1\")]\n\n[node name=\"Mesh\" parent=\".\" index=\"0\"]\nsurface_material_override/0 = ExtResource(\"3_b\")\nsurface_material_override/1 = ExtResource(\"2_a\")\n\n[node name=\"Other\" parent=\".\"]\nsurface_material_override/0 = ExtResource(\"3_b\")\n"
+	var fixed := Fixes.foliage_lod_bias_text(scene, {"MI_Leaf.tres": true})
+	assert_contains(fixed, "[node name=\"Mesh\" parent=\".\" index=\"0\"]\nlod_bias = 4.0\nsurface_material_override/0")
+	assert_contains(fixed, "[node name=\"Other\" parent=\".\"]\nsurface_material_override/0", "opaque meshes untouched")
+	assert_eq(Fixes.foliage_lod_bias_text(fixed, {"MI_Leaf.tres": true}), fixed, "idempotent")
+	assert_eq(Fixes.foliage_lod_bias_text(scene, {}), scene)
+	assert_true(Fixes.has_alpha_scissor("[resource]\nnodes/fragment/connections = PackedInt32Array(2, 0, 0, 19)\n"))
+	assert_false(Fixes.has_alpha_scissor("[resource]\nnodes/fragment/connections = PackedInt32Array(2, 0, 0, 1)\n"))

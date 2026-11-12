@@ -74,6 +74,15 @@ extends RefCounted
 ##    Opacity Mask are imported with alpha test coverage preserved; when the
 ##    opacity is in R, G or B, that channel is swapped with alpha on import and
 ##    back in the shader; see fix_opacity_textures.
+## 17. Alpha tested materials get render_mode alpha_to_coverage: with MSAA 3D
+##    on, sub-pixel leaves cover part of a pixel instead of a hard dot, so
+##    distant foliage stays full; see fix_alpha_to_coverage.
+## 18. Alpha tested foliage thins out with distance (small mipmaps keep the
+##    opacity below the clip value; Unreal hides it with TAA). The alpha
+##    scissor threshold is lowered with distance; see fix_alpha_test_distance.
+## 19. Automatic mesh LOD collapses leaf cards (half the crown gone at 90 m,
+##    popping at each LOD step). Meshes with alpha tested materials get
+##    lod_bias = 4; see fix_foliage_lod_bias.
 
 const Log = preload("res://addons/godotfab/log.gd")
 
@@ -163,6 +172,9 @@ static func fix_export_tree(root: String) -> Dictionary:
 	var opacity_fixed := fix_opacity_textures(root, files)
 	if opacity_fixed > 0:
 		Log.info("Opacity mask textures imported with alpha test coverage preserved: %d" % opacity_fixed)
+	var lod_fixed := fix_foliage_lod_bias(files)
+	if lod_fixed > 0:
+		Log.info("Alpha tested meshes with mesh LOD pushed away (lod_bias %s): %d" % [FOLIAGE_LOD_BIAS, lod_fixed])
 	# UnrealToGodot swaps a material that fails to compile in Unreal for a
 	# white "shader didn't compile" placeholder named "<MI>_Didnt_Compile_<n>".
 	var failed := {}
@@ -869,7 +881,11 @@ static func fix_visual_shader_text(text: String) -> Dictionary:
 	var powers := fix_unreal_power(transforms.text)
 	var normals := fix_world_normal_axes(powers.text)
 	var clamps := fix_clamp_min(normals.text)
-	var renamed_result := _rename_vertex_textures(clamps.text)
+	var coverage := fix_alpha_to_coverage(clamps.text)
+	var distance := fix_alpha_test_distance(coverage.text)
+	var renamed_result := _rename_vertex_textures(distance.text)
+	renamed_result.alpha_test_distance = distance.count
+	renamed_result.alpha_to_coverage = coverage.count
 	renamed_result.powers = powers.count
 	renamed_result.clamp_mins = clamps.count
 	renamed_result.world_normals = normals.count
@@ -879,6 +895,162 @@ static func fix_visual_shader_text(text: String) -> Dictionary:
 	renamed_result.sanitized = sanitize.sanitized
 	renamed_result.conditions = conditions.count
 	return renamed_result
+
+
+## Fragment output port of ALPHA_SCISSOR_THRESHOLD.
+const ALPHA_SCISSOR_PORT := 19
+
+
+## Fix 17: alpha tested materials (alpha scissor threshold connected) get
+## render_mode alpha_to_coverage. With MSAA 3D on, leaves smaller than a pixel
+## cover part of it instead of a hard on/off dot, so distant foliage stays full
+## (Unreal hides that with TAA). Without MSAA it changes nothing.
+## Returns {text, count: int} (1 when the flag was added).
+static func fix_alpha_to_coverage(text: String) -> Dictionary:
+	var unchanged := {"text": text, "count": 0}
+	var conn := RegEx.create_from_string("(?m)^nodes/fragment/connections = PackedInt32Array\\(([^)]*)\\)").search(text)
+	# Spatial shaders only (other modes number their output ports differently).
+	if conn == null or text.contains("\nflags/alpha_to_coverage = true") or RegEx.create_from_string("(?m)^mode = [1-9]").search(text):
+		return unchanged
+	var ints := conn.get_string(1).split(",", false)
+	var scissor := false
+	for i in range(0, ints.size() - 3, 4):
+		if int(ints[i + 2]) == 0 and int(ints[i + 3]) == ALPHA_SCISSOR_PORT:
+			scissor = true
+			break
+	if not scissor or not text.contains("\n[resource]\n"):
+		return unchanged
+	return {"text": text.replace("\n[resource]\n", "\n[resource]\nflags/alpha_to_coverage = true\n"), "count": 1}
+
+
+## lod_bias given to meshes with alpha tested materials.
+const FOLIAGE_LOD_BIAS := 4.0
+
+
+## Fix 19: Godot's automatic mesh LOD decimates foliage as any other mesh, and
+## collapsing leaf cards removes the leaves: a European Beech keeps half of its
+## crown area at 90 m and the crown pops at each LOD step. Mesh nodes of
+## scenes that use an alpha tested material (a ShaderMaterial whose shader has
+## the alpha scissor threshold connected) get lod_bias = FOLIAGE_LOD_BIAS,
+## which keeps the full crown past 200 m. Returns the number of scenes changed.
+static func fix_foliage_lod_bias(files: Array[String]) -> int:
+	var masked_shaders := {}
+	for path in files:
+		if not path.ends_with(".tres"):
+			continue
+		var text := FileAccess.get_file_as_string(path)
+		if text.begins_with("[gd_resource type=\"VisualShader\"") and has_alpha_scissor(text):
+			masked_shaders[path.get_file()] = true
+	if masked_shaders.is_empty():
+		return 0
+	var masked_materials := {}
+	for path in files:
+		if not path.ends_with(".tres"):
+			continue
+		var text := FileAccess.get_file_as_string(path)
+		if text.contains("ShaderMaterial") and masked_shaders.has(material_shader_file(text)):
+			masked_materials[path.get_file()] = true
+	var fixed := 0
+	for path in files:
+		if not path.ends_with(".tscn"):
+			continue
+		var text := FileAccess.get_file_as_string(path)
+		var fixed_text := foliage_lod_bias_text(text, masked_materials)
+		if fixed_text != text:
+			_write(path, fixed_text)
+			fixed += 1
+	return fixed
+
+
+## True when the fragment graph of a spatial VisualShader text feeds the alpha
+## scissor threshold.
+static func has_alpha_scissor(text: String) -> bool:
+	var conn := RegEx.create_from_string("(?m)^nodes/fragment/connections = PackedInt32Array\\(([^)]*)\\)").search(text)
+	if conn == null or RegEx.create_from_string("(?m)^mode = [1-9]").search(text):
+		return false
+	var ints := conn.get_string(1).split(",", false)
+	for i in range(0, ints.size() - 3, 4):
+		if int(ints[i + 2]) == 0 and int(ints[i + 3]) == ALPHA_SCISSOR_PORT:
+			return true
+	return false
+
+
+## Adds lod_bias to every node of a scene text that overrides a surface with a
+## material whose file name is a key of [param masked_materials].
+static func foliage_lod_bias_text(text: String, masked_materials: Dictionary) -> String:
+	var ext_paths := _ext_resource_paths(text)
+	var node_re := RegEx.create_from_string("(?m)^\\[node [^\\]]*\\]\n")
+	var override_re := RegEx.create_from_string("(?m)^surface_material_override/\\d+ = ExtResource\\(\"([^\"]+)\"\\)")
+	var out := ""
+	var last := 0
+	for m in node_re.search_all(text):
+		var end := text.find("\n[", m.get_end())
+		end = end if end >= 0 else text.length()
+		var block := text.substr(m.get_end(), end - m.get_end())
+		if ("\n" + block).contains("\nlod_bias = "):
+			continue
+		var masked := false
+		for o in override_re.search_all(block):
+			if masked_materials.has(str(ext_paths.get(o.get_string(1), "")).get_file()):
+				masked = true
+				break
+		if not masked:
+			continue
+		out += text.substr(last, m.get_end() - last) + "lod_bias = %s\n" % FOLIAGE_LOD_BIAS
+		last = m.get_end()
+	return out + text.substr(last)
+
+
+const ALPHA_DISTANCE_ID := "VisualShaderNodeExpression_godotfab_alpha_distance"
+## The alpha scissor threshold is multiplied by ALPHA_FAR_SCALE from
+## ALPHA_FAR_END meters on, blending in from ALPHA_FAR_BEGIN.
+const ALPHA_FAR_SCALE := 0.65
+const ALPHA_FAR_BEGIN := 10.0
+const ALPHA_FAR_END := 45.0
+
+
+## Fix 18: alpha tested foliage thins out with distance even with coverage
+## preserving mipmaps: bilinear filtering of the small mipmaps keeps the
+## opacity of a leaf below Unreal's clip value over most of its area (European
+## Beech draws 72% of its true crown area at 40 m, 55% at 60 m, 38% at 90 m).
+## Unreal hides that with TAA. An expression node between the threshold's
+## source and the output lowers the threshold with the distance to the camera,
+## which keeps the crown at 97-113% of its true area up to 90 m.
+## Returns {text, count: int} (1 when the node was added).
+static func fix_alpha_test_distance(text: String) -> Dictionary:
+	var unchanged := {"text": text, "count": 0}
+	var conn_re := RegEx.create_from_string("(?m)^nodes/fragment/connections = PackedInt32Array\\(([^)]*)\\)")
+	var conn := conn_re.search(text)
+	if conn == null or text.contains(ALPHA_DISTANCE_ID) or RegEx.create_from_string("(?m)^mode = [1-9]").search(text):
+		return unchanged
+	if not text.contains("\n[resource]\n"):
+		return unchanged
+	var ints: Array[int] = []
+	for v in conn.get_string(1).split(",", false):
+		ints.append(int(v))
+	var at := -1
+	for i in range(0, ints.size() - 3, 4):
+		if ints[i + 2] == 0 and ints[i + 3] == ALPHA_SCISSOR_PORT:
+			at = i
+			break
+	if at < 0:
+		return unchanged
+	var id := 2
+	for m in RegEx.create_from_string("(?m)^nodes/\\w+/(\\d+)/node = ").search_all(text):
+		id = maxi(id, int(m.get_string(1)) + 1)
+	var expression := "// GodotFab: alpha test threshold lowered with distance\noutput0 = input0 * mix(1.0, %s, smoothstep(%s, %s, length(VERTEX)));" % [ALPHA_FAR_SCALE, ALPHA_FAR_BEGIN, ALPHA_FAR_END]
+	var sub_resource := "[sub_resource type=\"VisualShaderNodeExpression\" id=\"%s\"]\nsize = Vector2(760, 200)\nexpression = \"%s\"\n\n" % [ALPHA_DISTANCE_ID, expression]
+	var node := "nodes/fragment/%d/node = SubResource(\"%s\")\nnodes/fragment/%d/position = Vector2(-120, 200)\nnodes/fragment/%d/size = Vector2(760, 200)\nnodes/fragment/%d/input_ports = \"0,0,input0;\"\nnodes/fragment/%d/output_ports = \"0,0,output0;\"\nnodes/fragment/%d/expression = \"%s\"\n" % [id, ALPHA_DISTANCE_ID, id, id, id, id, id, expression]
+	# source -> expression -> alpha scissor threshold
+	ints[at + 2] = id
+	ints[at + 3] = 0
+	ints.append_array([id, 0, 0, ALPHA_SCISSOR_PORT])
+	var joined := PackedStringArray()
+	for v in ints:
+		joined.append(str(v))
+	var out := text.replace(conn.get_string(0), node + "nodes/fragment/connections = PackedInt32Array(%s)" % ", ".join(joined))
+	out = out.replace("\n[resource]\n", "\n" + sub_resource + "[resource]\n")
+	return {"text": out, "count": 1}
 
 
 ## The converter's PixelNormalWS/VertexNormalWS node returns the world normal
