@@ -9,6 +9,8 @@ BlenderKit addon: a **Fab** tab on the main screen with search, filters, a thumb
 details dialog and a **Download** button. Assets are downloaded from your Fab library and land
 in the project under `res://fab_assets/<name>/`.
 
+![The Fab tab in the Godot editor](docs/images/getting-started/02_search.png)
+
 There are three import paths, chosen by the format the listing offers:
 
 | Format on Fab | What the addon does |

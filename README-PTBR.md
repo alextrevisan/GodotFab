@@ -9,6 +9,8 @@ addon BlenderKit: uma aba **Fab** na tela principal com busca, filtros, grade de
 diálogo de detalhes e botão **Download**. Os assets são baixados da sua biblioteca Fab e
 entram no projeto em `res://fab_assets/<nome>/`.
 
+![A aba Fab no editor da Godot](docs/images/getting-started/02_search.png)
+
 Três caminhos de importação, escolhidos pelo formato que a listagem oferece:
 
 | Formato na Fab | O que o addon faz |
