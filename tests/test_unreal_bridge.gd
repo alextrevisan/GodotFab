@@ -175,8 +175,8 @@ func test_pick_scene() -> void:
 
 
 func test_parse_progress() -> void:
-	var mesh := "[2026.11.05-02.30.19:651][188]LogTemp: Writing Mesh /run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4/UnrealToGodot1/SmallStructures/VOL1/Meshes/SM_Loafing_Shed_01a.glb (1/540)\n"
-	var mesh2 := "[2026.11.05-02.30.34:968][188]LogTemp: Writing Mesh /run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4/UnrealToGodot1/SmallStructures/VOL1/Meshes/SM_Loafing_Shed_01b.glb (2/540)\n"
+	var mesh := "[2026.11.05-02.30.19:651][188]LogTemp: Writing Mesh /opt/UnrealEngine/UnrealToGodot1/SmallStructures/VOL1/Meshes/SM_Loafing_Shed_01a.glb (1/540)\n"
+	var mesh2 := "[2026.11.05-02.30.34:968][188]LogTemp: Writing Mesh /opt/UnrealEngine/UnrealToGodot1/SmallStructures/VOL1/Meshes/SM_Loafing_Shed_01b.glb (2/540)\n"
 	var material := "[2026.11.05-02.28.21:014][188]LogTemp: Processing Materials ( 1 / 191 )\n"
 	var texture := "[2026.11.05-02.29.00:000][188]LogTemp: Writing Texture /tmp/out/T_Wood_D.png (3/12)\n"
 	var noise := "[2026.11.05-02.28.16:980][188]LogTemp: Warning: GetTotalFoliageInstances = 0\n"

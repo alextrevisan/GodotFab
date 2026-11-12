@@ -165,11 +165,16 @@ func _apply_download_dir() -> void:
 
 func _apply_paths() -> void:
 	var changed := false
-	for pair in [[Settings.UNREAL_PROJECT, _project], [Settings.UNREAL_ENGINE, _engine], [Settings.ENGINE_VERSION, _version]]:
+	# The Unreal paths belong to this computer (editor settings); the version is shared.
+	for pair in [[Settings.UNREAL_PROJECT, _project], [Settings.UNREAL_ENGINE, _engine]]:
 		var value: String = pair[1].text.strip_edges()
-		if value != str(Settings.get_project(pair[0])):
-			Settings.set_project(pair[0], value)
+		if value != str(Settings.get_editor(pair[0])):
+			Settings.set_editor(pair[0], value)
 			changed = true
+	var version := _version.text.strip_edges()
+	if version != Settings.engine_version():
+		Settings.set_project(Settings.ENGINE_VERSION, version)
+		changed = true
 	if changed:
 		plugin.on_settings_changed()
 

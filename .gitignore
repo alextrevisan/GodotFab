@@ -4,3 +4,4 @@ fab_assets/
 *.old/
 proximos_passos.md
 docs/superpowers/
+__pycache__/

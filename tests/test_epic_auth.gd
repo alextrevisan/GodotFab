@@ -6,7 +6,7 @@ const TOKEN_JSON := {
 	"access_token": "a",
 	"refresh_token": "r",
 	"account_id": "id",
-	"displayName": "Alex",
+	"displayName": "Player",
 	"expires_at": "2030-01-01T00:00:00.000Z",
 }
 
@@ -90,7 +90,7 @@ func test_sign_in_saves_session() -> void:
 	assert_eq(auth.access_token, "a")
 	assert_eq(auth.refresh_token, "r")
 	assert_eq(auth.account_id, "id")
-	assert_eq(auth.display_name, "Alex")
+	assert_eq(auth.display_name, "Player")
 	assert_eq(auth.expires_at, 1893456000.0)
 	assert_eq(changed_count[0], 1, "changed emitted")
 	assert_eq(account_count[0], 1, "account_changed emitted")
@@ -113,7 +113,7 @@ func test_sign_in_saves_session() -> void:
 	assert_eq(saved.access_token, "a")
 	assert_eq(saved.refresh_token, "r")
 	assert_eq(saved.account_id, "id")
-	assert_eq(saved.display_name, "Alex")
+	assert_eq(saved.display_name, "Player")
 	assert_eq(float(saved.expires_at), 1893456000.0)
 	if not OS.has_feature("windows"):
 		assert_eq(FileAccess.get_unix_permissions(auth.auth_path), FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER, "0600")
@@ -123,7 +123,7 @@ func test_sign_in_saves_session() -> void:
 	again.auth_path = auth.auth_path
 	again.load()
 	assert_true(again.is_logged_in(), "loaded")
-	assert_eq(again.display_name, "Alex")
+	assert_eq(again.display_name, "Player")
 	assert_eq(again.expires_at, 1893456000.0)
 	again.free()
 	auth.free()
@@ -168,7 +168,7 @@ func test_ensure_token_refreshes() -> void:
 	auth.access_token = "old"
 	auth.refresh_token = "r"
 	auth.account_id = "id"
-	auth.display_name = "Alex"
+	auth.display_name = "Player"
 	auth.expires_at = Time.get_unix_time_from_system() + 60.0
 	var account_count := [0]
 	auth.account_changed.connect(func(): account_count[0] += 1)

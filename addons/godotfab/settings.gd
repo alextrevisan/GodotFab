@@ -6,9 +6,6 @@ extends RefCounted
 
 const Log = preload("res://addons/godotfab/log.gd")
 
-const DEFAULT_ENGINE := "/run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4"
-const DEFAULT_PROJECT := "/run/media/alex/S Backup L/GitHub/UnrealSurvival/UnrealSurvival.uproject"
-
 const DOWNLOAD_DIR := "godotfab/downloads/directory"
 const PREFERRED_FORMAT := "godotfab/downloads/preferred_format"
 const UNREAL_PROJECT := "godotfab/unreal/project_path"
@@ -35,8 +32,8 @@ const SCENES := [["auto", "Auto (pack map + its unplaced meshes, else all meshes
 const KEYS := {
 	DOWNLOAD_DIR: {"default": "res://fab_assets", "hint": PROPERTY_HINT_DIR},
 	PREFERRED_FORMAT: {"default": "gltf", "hint": PROPERTY_HINT_ENUM, "hint_string": "gltf,fbx,unreal-engine"},
-	UNREAL_PROJECT: {"default": DEFAULT_PROJECT, "hint": PROPERTY_HINT_GLOBAL_FILE, "hint_string": "*.uproject"},
-	UNREAL_ENGINE: {"default": DEFAULT_ENGINE, "hint": PROPERTY_HINT_GLOBAL_DIR},
+	UNREAL_PROJECT: {"default": "", "hint": PROPERTY_HINT_GLOBAL_FILE, "hint_string": "*.uproject", "editor": true},
+	UNREAL_ENGINE: {"default": "", "hint": PROPERTY_HINT_GLOBAL_DIR, "editor": true},
 	ENGINE_VERSION: {"default": "UE_5.8"},
 	EXPORT_SKINNED: {"default": "skinned", "hint": PROPERTY_HINT_ENUM, "hint_string": "skinned,static"},
 	EXPORT_NANITE: {"default": "coarse", "hint": PROPERTY_HINT_ENUM, "hint_string": "coarse,original"},
@@ -120,11 +117,11 @@ static func preferred_format() -> String:
 
 
 static func unreal_project() -> String:
-	return str(get_project(UNREAL_PROJECT))
+	return str(get_editor(UNREAL_PROJECT))
 
 
 static func unreal_engine() -> String:
-	return str(get_project(UNREAL_ENGINE))
+	return str(get_editor(UNREAL_ENGINE))
 
 
 static func engine_version() -> String:
