@@ -2,7 +2,7 @@
 
 *English | [Português](GETTING_STARTED-PTBR.md)* · [Back to the README](../README.md)
 
-This guide takes you from an empty Godot project to a Fab asset in your scene, using the
+This guide takes you from an empty Godot project to a Fab asset in your project, using the
 glTF or FBX formats, which work on every platform (Linux, Windows and macOS).
 
 > **Unreal Engine assets are Linux only for now.** Converting `.uasset` packages needs Unreal
@@ -15,59 +15,91 @@ glTF or FBX formats, which work on every platform (Linux, Windows and macOS).
    and extract it anywhere.
 2. Copy its `addons/godotfab` folder into your Godot 4.8 project. You should end up with
    `res://addons/godotfab/plugin.cfg`.
-3. In Godot, open *Project → Project Settings → Plugins* and enable **GodotFab**.
+3. In Godot, open *Project → Project Settings*, go to the **Addons** tab and turn **GodotFab** on.
+
+![GodotFab enabled in Project Settings → Addons](images/getting-started/01_plugins.png)
 
 A **Fab** tab appears in the editor's top bar, next to 2D, 3D and Script.
 
-## 2. Log in to Epic Games
+## 2. Find an asset
+
+1. Open the **Fab** tab, type in the search box and press Enter.
+2. Use the filters to narrow the results: **Free only**, type, format and sort order. Each card
+   shows the formats it offers (glTF, FBX, UE) and its price.
+3. Click a card to open its details: description, formats and price.
+
+![Search results for "chair" with Free only checked](images/getting-started/02_search.png)
+
+Searching works without logging in.
+
+## 3. Log in to Epic Games
 
 Downloads come from your Fab library, so you need an Epic Games account.
 
-1. In the **Fab** tab, open the menu (the icon to the right of the search box) and choose
-   **Log In to Epic Games…**.
-2. Click **Open login page in browser** and log in on the Epic page.
-3. The page shows a JSON text with an `authorizationCode`. Copy only the code and paste it into
-   the dialog, then click **Log In**.
+1. Click the menu next to the search box and choose **Log In to Epic Games…**.
 
-The login is saved; you only need to do this again if it expires.
+   ![The Fab menu](images/getting-started/03_menu.png)
 
-## 3. Find an asset
+2. In the dialog, click **Open login page in browser**.
 
-1. Type in **Search Fab assets** and press Enter. Use **Free only** to see only free assets.
-2. Click a thumbnail to open its details: description, formats and price.
+   ![The login dialog](images/getting-started/04_login_dialog.png)
 
-Searching works without logging in. Only assets that offer glTF, FBX or Unreal Engine formats are
-listed.
+3. Log in on the Epic page (or pick your account if you are already logged in).
 
-## 4. Add it to your library
+   ![Epic account page](images/getting-started/05_epic_account.png)
 
-Fab only lets you download assets that are in your library.
+4. The page shows a short JSON text. Copy the value of `authorizationCode` (or the whole text),
+   paste it into the dialog and click **Log In**.
 
-- **Free asset:** click **Add on fab.com**. The asset page opens in the browser; click
-  *Add to My Library* there, then come back to Godot and click **Refresh library**.
-- **Paid asset:** click **Buy on fab.com** and buy it on the website.
+   ![The JSON with the authorizationCode (blurred here)](images/getting-started/06_epic_code.png)
 
-If you already clicked **Download**, it waits and continues on its own once the asset shows up
-in your library.
+> Never share this code: it gives access to your Epic account. It expires in a few minutes, and
+> the login is saved, so you only do this once.
+
+## 4. Add the asset to your library
+
+Fab only lets you download assets that are in your library. When a free asset isn't there yet,
+the details say **Not in your library yet**:
+
+![Details of a free asset that is not in the library](images/getting-started/07_details_not_in_library.png)
+
+1. Click **Add to My Library**. The asset page opens in the browser.
+2. Click **Add to My Library** on fab.com.
+
+   ![The asset page on fab.com](images/getting-started/08_fab_add.png)
+
+3. Back in Godot, use **Refresh library** (in the details or in the menu).
+
+Paid assets must be bought on fab.com first (**Buy on fab.com**). If you click **Download** before
+the asset is in your library, the download waits and continues on its own once it shows up.
 
 ## 5. Download
 
-1. In the asset details, click **Download**. By default the addon picks glTF, then FBX
-   (*Settings → Preferred format*).
-2. The progress shows in the dialog. Downloads that stop halfway continue where they stopped.
-3. When it finishes, the asset is in `res://fab_assets/<asset name>/`.
+1. In the details, pick the **Format** and click **Download**. By default the addon picks glTF,
+   then FBX (*Settings → Preferred format*).
 
-## 6. Use it in a scene
+   ![An asset in the library, ready to download](images/getting-started/09_details_download.png)
 
-- Click **Open Scene** in the asset details, or open the `.glb` / `.fbx` file from the
-  FileSystem dock.
-- To place it in your level, drag the `.glb` / `.fbx` file from the FileSystem dock into the 3D
-  viewport.
-- To edit the imported model, right-click it in the scene and choose *Make Local*, or use
-  *Scene → New Inherited Scene*.
+2. The progress shows in the details and on the card. Downloads that stop halfway continue
+   where they stopped.
+
+   ![Download in progress](images/getting-started/10_downloading.png)
+
+3. When it finishes, the details show where the asset is in the project.
+
+   ![Download finished](images/getting-started/11_done.png)
+
+## 6. Use the files
+
+The files are in `res://fab_assets/<asset name>/`, in the FileSystem dock:
+
+![The downloaded files in the FileSystem dock](images/getting-started/12_files.png)
+
+Drag the `.glb` / `.fbx` file into the 3D viewport to place it in a scene. To edit the imported
+model, right-click it in the scene and choose *Make Local*, or use *Scene → New Inherited Scene*.
 
 ## Next steps
 
-- Settings such as the download folder are under the menu → **Settings…**.
+- Settings such as the download folder are in the menu → **Settings…**.
 - Download problems (HTTP 403, Fab terms, error 429) are explained in
   [Troubleshooting](../README.md#troubleshooting).
