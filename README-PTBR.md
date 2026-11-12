@@ -28,7 +28,7 @@ O formato preferido fica em *Settings → Preferred format* (padrão: glTF, depo
   em *Refresh library* no Godot; um download que estava esperando continua sozinho. Assets pagos
   precisam ser comprados no fab.com.
 - Para o caminho Unreal: Unreal Engine 5.8 instalado e um projeto Unreal com o plugin
-  **UnrealToGodot** (Ciprian Stanciu) compilado com o commandlet desta pasta `unreal/`.
+  **UnrealToGodot** (Ciprian Stanciu) compilado com o commandlet da pasta `addons/godotfab/unreal/`.
   Sem isso, os formatos glTF/FBX continuam funcionando.
 
 ## Instalação
@@ -46,17 +46,17 @@ O UnrealToGodot exporta pelo botão da toolbar do editor Unreal. Para automatiza
 adiciona um commandlet ao plugin. Com o engine e o projeto nos caminhos padrão:
 
 ```sh
-unreal/install_commandlet.sh "/run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4" \
+addons/godotfab/unreal/install_commandlet.sh "/run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4" \
   "/run/media/alex/S Backup L/GitHub/UnrealSurvival/UnrealSurvival.uproject"
 ```
 
-O script copia `unreal/UnrealToGodotCommandlet/*` para `Plugins/UnrealToGodot/Source/UnrealToGodot/Public/`,
+O script copia `addons/godotfab/unreal/UnrealToGodotCommandlet/*` para `Plugins/UnrealToGodot/Source/UnrealToGodot/Public/`,
 faz backup de `Binaries/` e recompila o plugin com o UnrealBuildTool (cerca de 20 min na primeira
 vez). Ele também aplica um ajuste de uma linha em `GodotScene.cpp` do plugin (guarda
 `!FApp::IsUnattended()` antes de abrir a janela de opções do glTF, que não existe em modo
 commandlet); o original fica em `GodotScene.cpp.godotfab-orig`. O addon invoca
 `UnrealEditor-Cmd <projeto> -run=UnrealToGodot.UnrealToGodot -ContentPath=/Game/<Pasta>[,/Game/<Outra>…]
-[-Map=…] -Output=<pasta> -unattended -AllowCommandletRendering`. Detalhes em `unreal/README.md`.
+[-Map=…] -Output=<pasta> -unattended -AllowCommandletRendering`. Detalhes em `addons/godotfab/unreal/README.md`.
 
 Pacotes que instalam várias pastas na raiz de `Content` (amostras Megascans, como *Medieval
 Village*) passam todas em `-ContentPath`. No modo automático, o mapa escolhido é o mais pesado

@@ -1,5 +1,5 @@
 // GodotFab - headless entry point for the UnrealToGodot plugin.
-// Copied into Plugins/UnrealToGodot/Source/UnrealToGodot/Public/ by unreal/install_commandlet.sh
+// Copied into Plugins/UnrealToGodot/Source/UnrealToGodot/Public/ by addons/godotfab/unreal/install_commandlet.sh
 
 #pragma once
 

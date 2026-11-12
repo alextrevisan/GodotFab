@@ -2,7 +2,7 @@
 # Installs the GodotFab commandlet into the UnrealToGodot plugin of a project and
 # rebuilds the plugin with the installed engine's UnrealBuildTool.
 #
-#   unreal/install_commandlet.sh <engine_dir> <uproject>
+#   addons/godotfab/unreal/install_commandlet.sh <engine_dir> <uproject>
 #
 # <engine_dir> is the root of an installed Unreal Engine (contains Engine/Build/BatchFiles/Linux/Build.sh).
 # <uproject>   is the .uproject whose Plugins/UnrealToGodot/ should receive the commandlet.

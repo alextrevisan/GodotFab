@@ -27,7 +27,7 @@ The preferred format is set in *Settings → Preferred format* (default: glTF, t
   the launcher token): click *Add to My Library* there and then *Refresh library* in Godot; a
   download that was waiting resumes on its own. Paid assets must be bought on fab.com.
 - For the Unreal path: Unreal Engine 5.8 installed and an Unreal project with the
-  **UnrealToGodot** plugin (Ciprian Stanciu) built with the commandlet from the `unreal/` folder.
+  **UnrealToGodot** plugin (Ciprian Stanciu) built with the commandlet from the `addons/godotfab/unreal/` folder.
   Without it, the glTF/FBX formats keep working.
 
 ## Installation
@@ -45,17 +45,17 @@ UnrealToGodot exports through a button in the Unreal editor toolbar. To automate
 adds a commandlet to the plugin. With the engine and the project at their usual paths:
 
 ```sh
-unreal/install_commandlet.sh "/run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4" \
+addons/godotfab/unreal/install_commandlet.sh "/run/media/alex/S Backup L/Linux_Unreal_Engine_5.8.4" \
   "/run/media/alex/S Backup L/GitHub/UnrealSurvival/UnrealSurvival.uproject"
 ```
 
-The script copies `unreal/UnrealToGodotCommandlet/*` into `Plugins/UnrealToGodot/Source/UnrealToGodot/Public/`,
+The script copies `addons/godotfab/unreal/UnrealToGodotCommandlet/*` into `Plugins/UnrealToGodot/Source/UnrealToGodot/Public/`,
 backs up `Binaries/` and rebuilds the plugin with UnrealBuildTool (about 20 min the first
 time). It also applies a one-line change to the plugin's `GodotScene.cpp` (a
 `!FApp::IsUnattended()` guard before opening the glTF options window, which does not exist in
 commandlet mode); the original is kept as `GodotScene.cpp.godotfab-orig`. The addon invokes
 `UnrealEditor-Cmd <project> -run=UnrealToGodot.UnrealToGodot -ContentPath=/Game/<Folder>[,/Game/<Other>…]
-[-Map=…] -Output=<folder> -unattended -AllowCommandletRendering`. Details in `unreal/README.md`.
+[-Map=…] -Output=<folder> -unattended -AllowCommandletRendering`. Details in `addons/godotfab/unreal/README.md`.
 
 Packages that install several folders at the root of `Content` (Megascans samples such as
 *Medieval Village*) pass all of them in `-ContentPath`. In automatic mode, the chosen map is the

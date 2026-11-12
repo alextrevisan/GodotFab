@@ -7,7 +7,7 @@ a Godot project (meshes as `.glb`, materials as `.tres`, textures as `.png`, the
 as `.tscn`).
 
 ```
-unreal/
+addons/godotfab/unreal/
   UnrealToGodotCommandlet/UnrealToGodotCommandlet.h    commandlet source (copied into the plugin)
   UnrealToGodotCommandlet/UnrealToGodotCommandlet.cpp
   install_commandlet.sh                                 copies the sources + rebuilds the plugin
@@ -20,7 +20,7 @@ Requirements: an installed Unreal Engine 5.8 (Linux), a project that contains th
 `PATH` (UnrealBuildTool uses it).
 
 ```sh
-unreal/install_commandlet.sh "<engine_dir>" "<project>/<Project>.uproject"
+addons/godotfab/unreal/install_commandlet.sh "<engine_dir>" "<project>/<Project>.uproject"
 ```
 
 The script
