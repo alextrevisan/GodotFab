@@ -97,8 +97,8 @@ func test_direct_path_reaches_done() -> void:
 	var job := jobs.get_job("uid-1")
 	assert_eq(job.state, Jobs.State.DONE, job.error)
 	assert_eq(states, [Jobs.State.QUEUED, Jobs.State.MANIFEST, Jobs.State.DOWNLOADING, Jobs.State.EXTRACTING, Jobs.State.IMPORTING, Jobs.State.DONE])
-	assert_eq(api.calls[1], ["listing_format", "uid-1", "gltf"])
-	assert_eq(api.calls[2], ["file_download_info", "uid-1", "gltf", "f1"])
+	assert_eq(api.calls[0], ["listing_format", "uid-1", "gltf"], "no library lookup for glTF")
+	assert_eq(api.calls[1], ["file_download_info", "uid-1", "gltf", "f1"])
 	var importer: Fakes.FakeImporter = jobs.importer
 	assert_eq(importer.calls[0][0], "extract_zips")
 	assert_eq(importer.calls[1][0], "import_direct")
@@ -198,10 +198,40 @@ func test_not_in_library_sets_needs_library() -> void:
 	jobs.queue_free()
 
 
+func test_direct_format_downloads_without_library_entry() -> void:
+	# glTF/FBX assets (Quixel and others) are missing from the Unreal library endpoint.
+	var api := Fakes.FakeApi.new()
+	api.direct_url = "https://cdn/files/x?sig=1"
+	var jobs := _jobs(api)
+	jobs.start(LISTING, "gltf")
+	await _wait_finished(jobs, "uid-1")
+	var job := jobs.get_job("uid-1")
+	assert_eq(job.state, Jobs.State.DONE, job.error)
+	assert_eq(api.calls.filter(func(c): return c[0] == "library"), [], "the Unreal library isn't asked")
+	assert_false(api.calls.any(func(c): return c[0] == "add_to_library"))
+	jobs.queue_free()
+
+
+func test_direct_format_not_owned_needs_library() -> void:
+	var api := Fakes.FakeApi.new()
+	api.direct_url = "https://cdn/files/x?sig=1"
+	api.pointers_not_owned = true
+	var jobs := _jobs(api)
+	jobs.start(LISTING, "fbx")
+	await _wait_finished(jobs, "uid-1")
+	assert_eq(jobs.get_job("uid-1").state, Jobs.State.NEEDS_LIBRARY)
+	# Bought on fab.com, then Refresh library: the job asks Fab again.
+	api.pointers_not_owned = false
+	jobs.retry_waiting_for_library([])
+	await _wait_finished(jobs, "uid-1")
+	assert_eq(jobs.get_job("uid-1").state, Jobs.State.DONE, jobs.get_job("uid-1").error)
+	jobs.queue_free()
+
+
 func test_add_to_library_then_restart() -> void:
 	var api := Fakes.FakeApi.new()
 	var jobs := _jobs(api)
-	jobs.start(LISTING, "gltf")
+	jobs.start(LISTING, "unreal-engine")
 	await _wait_finished(jobs, "uid-1")
 	assert_eq(jobs.get_job("uid-1").state, Jobs.State.NEEDS_LIBRARY)
 	api.library_items = [LIBRARY_ITEM]
@@ -216,7 +246,7 @@ func test_add_to_library_needs_web_then_refresh_restarts() -> void:
 	var api := Fakes.FakeApi.new()
 	api.add_result = {"ok": false, "error": "Add it on fab.com", "needs_web": true, "unauthorized": false}
 	var jobs := _jobs(api)
-	jobs.start(LISTING, "gltf")
+	jobs.start(LISTING, "unreal-engine")
 	await _wait_finished(jobs, "uid-1")
 	jobs.add_to_library("uid-1")
 	await _wait_finished(jobs, "uid-1")
@@ -422,7 +452,7 @@ func test_free_listing_is_added_to_library_automatically() -> void:
 			if api.calls.any(func(c): return c[0] == "add_to_library"):
 				api.library_items = [LIBRARY_ITEM]
 	watcher.call()
-	jobs.start(free_listing, "gltf")
+	jobs.start(free_listing, "unreal-engine")
 	await _wait_finished(jobs, "uid-1")
 	assert_eq(jobs.get_job("uid-1").state, Jobs.State.DONE, jobs.get_job("uid-1").error)
 	assert_true(states.has(Jobs.State.ADDING_TO_LIBRARY), "went through ADDING_TO_LIBRARY: %s" % str(states))
@@ -436,7 +466,7 @@ func test_free_listing_needs_web_stops_at_needs_library() -> void:
 	var free_listing := LISTING.duplicate()
 	free_listing["isFree"] = true
 	var jobs := _jobs(api)
-	jobs.start(free_listing, "gltf")
+	jobs.start(free_listing, "unreal-engine")
 	await _wait_finished(jobs, "uid-1")
 	var job := jobs.get_job("uid-1")
 	assert_eq(job.state, Jobs.State.NEEDS_LIBRARY)

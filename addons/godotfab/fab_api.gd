@@ -338,6 +338,11 @@ func _parse_download_info(response: Dictionary) -> Dictionary:
 		return _pointers_error("Fab rate-limited the download (HTTP 403). Wait a minute and try again.", false)
 	if response.status == 401:
 		return _pointers_error("Fab rejected the login; log in again", true)
+	if response.status == 404:
+		# Fab hides the files of a listing the account doesn't own.
+		var not_owned := _pointers_error("This asset isn't in your Fab library", false)
+		not_owned["not_owned"] = true
+		return not_owned
 	if not response.ok or not response.json is Dictionary:
 		return _pointers_error(response.error if response.error else "unexpected download response", false)
 	var infos = response.json.get("downloadInfo", response.json.get("download_info"))

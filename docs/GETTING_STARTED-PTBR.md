@@ -56,23 +56,20 @@ Os downloads vêm da sua biblioteca Fab, então você precisa de uma conta Epic 
 > Nunca compartilhe esse código: ele dá acesso à sua conta Epic. Ele expira em poucos minutos, e o
 > login fica salvo, então isso só é feito uma vez.
 
-## 4. Adicione o asset à sua biblioteca
+## 4. Assets pagos: compre antes
 
-A Fab só deixa baixar assets que estão na sua biblioteca. Quando um asset grátis ainda não está
-lá, os detalhes mostram **Not in your library yet**:
+Assets **grátis** em glTF/FBX baixam direto; pule para o próximo passo.
 
-![Detalhes de um asset grátis que não está na biblioteca](images/getting-started/07_details_not_in_library.png)
+Um asset **pago** precisa estar na sua biblioteca Fab. Se não estiver, o download para com
+**Not in your library**:
 
-1. Clique em **Add to My Library**. A página do asset abre no navegador.
-2. Clique em **Add to My Library** no fab.com.
+1. Clique em **Buy on fab.com**. A página do asset abre no navegador.
+2. Compre (ou adicione à biblioteca) no fab.com.
 
-   ![A página do asset no fab.com](images/getting-started/08_fab_add.png)
+   ![Página de um asset no fab.com](images/getting-started/08_fab_add.png)
 
-3. De volta à Godot, use **Refresh library** (nos detalhes ou no menu).
-
-Assets pagos precisam ser comprados no fab.com antes (**Buy on fab.com**). Se você clicar em
-**Download** antes de o asset estar na biblioteca, o download espera e continua sozinho quando ele
-aparecer.
+3. De volta à Godot, use **Refresh library** (nos detalhes ou no menu). O download que estava
+   esperando continua sozinho.
 
 ## 5. Baixe
 

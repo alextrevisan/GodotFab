@@ -27,10 +27,11 @@ The preferred format is set in *Settings → Preferred format* (default: glTF, t
 - Godot 4.8 (tested with 4.8 beta2 mono).
 - An Epic Games account. Login uses the same flow as Legendary/Heroic: the browser opens the
   Epic page, you copy the `authorizationCode` it shows and paste it into the addon's dialog.
-- Only assets **already in your Fab library** can be downloaded. To add a free asset, the addon
-  opens its page on fab.com (the "add to library" endpoints only accept the website session, not
-  the launcher token): click *Add to My Library* there and then *Refresh library* in Godot; a
-  download that was waiting resumes on its own. Paid assets must be bought on fab.com.
+- Free glTF/FBX assets download directly. Paid assets must be in your Fab library (buy them on
+  fab.com, then *Refresh library* in Godot; a download that was waiting resumes on its own).
+  Unreal packages must be in your library too: for a free one, the addon opens its page on
+  fab.com (the "add to library" endpoints only accept the website session, not the launcher
+  token): click *Add to My Library* there and then *Refresh library*.
 - For the Unreal path (Linux only): Unreal Engine 5.8 for Linux installed and an Unreal project with the
   **UnrealToGodot** plugin (Ciprian Stanciu) built with the commandlet from the `addons/godotfab/unreal/` folder.
   Without it, the glTF/FBX formats keep working.

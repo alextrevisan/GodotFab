@@ -169,7 +169,10 @@ func add_to_library(uid: String) -> void:
 ## owned start again.
 func retry_waiting_for_library(items: Array) -> void:
 	for uid in _jobs.keys():
-		if _jobs[uid].state == State.NEEDS_LIBRARY and not FabApi.library_item_for(items, uid).is_empty():
+		var waiting: bool = _jobs[uid].state == State.NEEDS_LIBRARY
+		# The Unreal library lists only packs with an Unreal build; a glTF/FBX job
+		# asks Fab again (download-info tells whether the account owns it).
+		if waiting and (_jobs[uid].format != FabApi.UNREAL_FORMAT or not FabApi.library_item_for(items, uid).is_empty()):
 			var job: Dictionary = _jobs[uid]
 			_jobs.erase(uid)
 			start(job.listing, job.format, job.scene_pref, job.engine_version)
@@ -208,51 +211,68 @@ static func state_label(state: int) -> String:
 func _run(uid: String) -> void:
 	var job: Dictionary = _jobs[uid]
 	_set_state(uid, State.MANIFEST)
+	# Only Unreal builds come from the library (/ue/library, which lists only packs
+	# with an Unreal build). glTF/FBX files come from the listing's download-info,
+	# which answers 404 when the account doesn't own the listing.
+	if job.format == FabApi.UNREAL_FORMAT and not await _library_item_ready(uid):
+		return
+
+	var builds: Array = await _collect_builds(uid, job.get("library_item", {}))
+	if job.cancelled or job.state in [State.ERROR, State.NEEDS_LOGIN, State.NEEDS_LIBRARY]:
+		return
+	if builds.is_empty():
+		_fail(uid, "Nothing to download")
+		return
+	await _download_and_import(uid, builds)
+
+
+## Finds the job's Unreal library item (claiming a free listing on the way) and
+## stores it in job.library_item. False when the job stopped (login, library…).
+func _library_item_ready(uid: String) -> bool:
+	var job: Dictionary = _jobs[uid]
 	var item: Dictionary = await _find_library_item(uid)
 	if job.cancelled:
-		return
+		return false
 	if item.has("_unauthorized"):
 		_needs_login(uid, item._unauthorized)
-		return
+		return false
 	if item.has("_error"):
 		_fail(uid, item._error)
-		return
+		return false
 	if item.is_empty() and FabApi.is_free(job.listing):
 		# Free listings are claimed on the way, like "Add to project" on fab.com.
 		_set_state(uid, State.ADDING_TO_LIBRARY)
 		var added: Dictionary = await api.add_to_library(uid)
 		if job.cancelled:
-			return
+			return false
 		if added.get("unauthorized", false):
 			_needs_login(uid, added.error)
-			return
+			return false
 		if added.ok:
 			_set_state(uid, State.MANIFEST)
 			item = await _find_library_item(uid)
 			if job.cancelled:
-				return
+				return false
 			if item.has("_unauthorized") or item.has("_error"):
 				_fail(uid, str(item.get("_error", item.get("_unauthorized", ""))))
-				return
+				return false
 		else:
 			_set_state(uid, State.NEEDS_LIBRARY)
 			job.needs_web = added.get("needs_web", false)
 			job.error = added.error
 			_emit(uid)
-			return
+			return false
 	if item.is_empty():
 		job.message = "Add it to your library on Fab first"
 		_set_state(uid, State.NEEDS_LIBRARY)
-		return
+		return false
 	job.library_item = item
+	return true
 
-	var builds: Array = await _collect_builds(uid, item)
-	if job.cancelled or job.state == State.ERROR or job.state == State.NEEDS_LOGIN:
-		return
-	if builds.is_empty():
-		_fail(uid, "Nothing to download")
-		return
 
+## Downloads [param builds], then imports (or converts) them.
+func _download_and_import(uid: String, builds: Array) -> void:
+	var job: Dictionary = _jobs[uid]
 	# Downloads: at most MAX_DOWNLOADS jobs at once.
 	await _wait_for_slot(uid, State.DOWNLOADING, MAX_DOWNLOADS, State.MANIFEST, "Waiting for other downloads…")
 	if job.cancelled:
@@ -442,6 +462,10 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 			return []
 		if pointers.get("unauthorized", false):
 			_needs_login(uid, pointers.error)
+			return []
+		if pointers.get("not_owned", false):
+			job.message = "Not in your library: buy it on fab.com (or add it there), then click Refresh library."
+			_set_state(uid, State.NEEDS_LIBRARY)
 			return []
 		if not pointers.ok:
 			_fail(uid, pointers.error)

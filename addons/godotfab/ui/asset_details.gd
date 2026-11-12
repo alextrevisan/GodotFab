@@ -551,13 +551,14 @@ func _update_action() -> void:
 	else:
 		_action.text = "Download"
 		_status.text = "Converts with Unreal Engine (UnrealToGodot)." if is_unreal else "Imported directly by Godot."
-		if logged_in and FabApi.is_free(listing) and _in_library.get(uid, true) == false:
+		# Only Unreal builds need the library entry; glTF/FBX downloads ask Fab directly.
+		if is_unreal and logged_in and FabApi.is_free(listing) and _in_library.get(uid, true) == false:
 			_secondary.visible = true
 			_secondary.text = "Add to My Library"
 			_secondary.tooltip_text = "Adds this free asset to your Fab library. Fab needs its website for that, so the listing page opens in your browser; click Add to My Library there, then Refresh library here."
 			_secondary.pressed.connect(_add_to_library_now)
 			_status.text += " Not in your library yet."
-		elif logged_in and _in_library.get(uid, false) == true:
+		elif is_unreal and logged_in and _in_library.get(uid, false) == true:
 			_status.text += " In your library."
 	if not state in Jobs.ACTIVE:
 		var kept: int = gallery.jobs.downloads_size(uid)

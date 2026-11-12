@@ -9,6 +9,8 @@ class FakeApi extends RefCounted:
 	var library_unauthorized := false
 	var pointers_ok := true
 	var pointers_unauthorized := false
+	## download-info answers 404: the account doesn't own the listing.
+	var pointers_not_owned := false
 	var format_files: Array = [{"uid": "f1", "name": "source.zip", "status": "ready"}]
 	var format_versions: Array = []
 	var manifest_bytes := PackedByteArray([1, 2, 3])
@@ -53,6 +55,8 @@ class FakeApi extends RefCounted:
 	func _pointers() -> Dictionary:
 		if pointers_unauthorized:
 			return {"ok": false, "error": "401", "unauthorized": true, "build_version": "", "sources": []}
+		if pointers_not_owned:
+			return {"ok": false, "error": "Not in your library", "unauthorized": false, "not_owned": true, "build_version": "", "sources": []}
 		if not pointers_ok:
 			return {"ok": false, "error": "rate limited", "unauthorized": false, "build_version": "", "sources": []}
 		if not direct_url.is_empty():

@@ -227,6 +227,16 @@ func test_file_download_info_direct_url() -> void:
 	assert_eq(result.sources, [])
 
 
+func test_file_download_info_404_means_not_owned() -> void:
+	var pair := _api()
+	var api = pair[0]
+	pair[1].add("download-info", {"status": 404, "json": {"detail": "Not found."}})
+	var result = await api.file_download_info("uid1", "fbx", "f1")
+	assert_false(result.ok)
+	assert_true(result.get("not_owned", false), "404: the account doesn't own the listing")
+	assert_false(result.unauthorized)
+
+
 func test_manifest_pointers_403_message() -> void:
 	var pair := _api()
 	var api = pair[0]
