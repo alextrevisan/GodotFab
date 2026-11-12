@@ -1,0 +1,56 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching version= in addons/godotfab/plugin.cfg) to publish a release
+# with the addon zip and notes listing the merged pull requests since the previous tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag matches plugin.cfg version
+        run: |
+          version=$(sed -n 's/^version="\(.*\)"$/\1/p' addons/godotfab/plugin.cfg)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match plugin.cfg version $version"
+            exit 1
+          fi
+
+      - name: Build addon zip
+        run: |
+          git archive --format=zip -o "GodotFab-$GITHUB_REF_NAME.zip" HEAD addons/godotfab
+          unzip -l "GodotFab-$GITHUB_REF_NAME.zip" | tail -1
+
+      - name: Write release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          args=(-f tag_name="$GITHUB_REF_NAME")
+          [ -n "$prev" ] && args+=(-f previous_tag_name="$prev")
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body > notes.md
+          # Changes pushed straight to the branch have no pull request: list the commits too.
+          range=${prev:+$prev..}$GITHUB_REF_NAME
+          {
+            echo
+            echo "## Commits"
+            echo
+            git log --no-merges --format='- %s (%h)' "$range"
+          } >> notes.md
+          cat notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "GodotFab-$GITHUB_REF_NAME.zip" \
+            --title "GodotFab $GITHUB_REF_NAME" --notes-file notes.md --verify-tag

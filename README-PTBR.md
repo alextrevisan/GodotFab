@@ -182,6 +182,20 @@ GODOTFAB_SMOKE=1 "$GODOT" --headless --editor --path .        # smoke da UI cont
 
 As fixtures de manifesto são geradas por `python3 -I tests/fixtures/make_manifest_fixtures.py`.
 
+## Releases
+
+As releases são geradas pelo GitHub Actions (`.github/workflows/release.yml`). Para publicar uma:
+
+1. Coloque a nova versão em `version=` no `addons/godotfab/plugin.cfg` e faça o commit.
+2. Crie uma tag nesse commit com a mesma versão e envie a tag:
+   ```sh
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
+
+O workflow confere se a tag bate com o `plugin.cfg`, compacta `addons/godotfab/` num zip (extraia
+na raiz de um projeto Godot) e cria a release. As notas listam os PRs mesclados desde a tag
+anterior, agrupados por label (`.github/release.yml`), e em seguida todos os commits do período.
+
 ## Licença
 
 [MIT](LICENSE).
