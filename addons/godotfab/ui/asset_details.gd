@@ -49,8 +49,12 @@ var _action: Button
 var _secondary: Button
 var _convert_again: Button
 var _delete_downloads: Button
+var _archive_box: VBoxContainer
+var _archive_label: Label
+var _archive_folder: LinkButton
 var _delete_confirm: ConfirmationDialog
 var _status: Label
+var _progress: ProgressBar
 var _error_box: VBoxContainer
 var _error_label: Label
 var _log: RichTextLabel
@@ -121,6 +125,21 @@ func setup(new_gallery: Node) -> void:
 	_tags.add_theme_color_override("font_color", get_theme_color("font_disabled_color", "Editor"))
 	right.add_child(_tags)
 
+	# Archives the download couldn't extract (.rar, .7z): what to do, and a
+	# link that opens the folder they were kept in.
+	_archive_box = VBoxContainer.new()
+	_archive_box.visible = false
+	content.add_child(_archive_box)
+	_archive_label = Label.new()
+	_archive_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_archive_label.add_theme_color_override("font_color", get_theme_color("warning_color", "Editor"))
+	_archive_box.add_child(_archive_label)
+	_archive_folder = LinkButton.new()
+	_archive_folder.underline = LinkButton.UNDERLINE_MODE_ALWAYS
+	_archive_folder.tooltip_text = "Opens the folder in the file manager"
+	_archive_folder.pressed.connect(func(): OS.shell_show_in_file_manager(gallery.jobs.archives_dir(str(listing.get("uid", "")))))
+	_archive_box.add_child(_archive_folder)
+
 	_error_box = VBoxContainer.new()
 	_error_box.visible = false
 	content.add_child(_error_box)
@@ -154,6 +173,12 @@ func setup(new_gallery: Node) -> void:
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_status)
+	# The running job's progress (the card in the gallery shows the same).
+	_progress = ProgressBar.new()
+	_progress.max_value = 1.0
+	_progress.step = 0.001
+	_progress.visible = false
+	content.add_child(_progress)
 	# Wraps on narrow screens instead of widening the dialog.
 	var footer := HFlowContainer.new()
 	footer.add_theme_constant_override("h_separation", int(8 * edscale))
@@ -506,6 +531,8 @@ func _update_action() -> void:
 	_action.disabled = false
 	_action.icon = null
 	_format.disabled = state in Jobs.ACTIVE
+	_progress.visible = state in Jobs.ACTIVE
+	_progress.value = float(job.get("progress", 0.0))
 	var downloaded: Dictionary = gallery.downloaded_entry(uid)
 	var logged_in: bool = gallery.auth.is_logged_in()
 	for connection in _secondary.pressed.get_connections():
@@ -560,6 +587,12 @@ func _update_action() -> void:
 			_status.text += " Not in your library yet."
 		elif is_unreal and logged_in and _in_library.get(uid, false) == true:
 			_status.text += " In your library."
+	var archives: Array = gallery.jobs.unextracted_archives(uid) if not state in Jobs.ACTIVE else []
+	_archive_box.visible = not archives.is_empty()
+	if _archive_box.visible:
+		var target := str(job.get("target", "res://" + str(downloaded.get("folder", ""))))
+		_archive_label.text = GodotImport.archive_warning(archives, target)
+		_archive_folder.text = "Downloaded to: %s" % gallery.jobs.archives_dir(uid)
 	if not state in Jobs.ACTIVE:
 		var kept: int = gallery.jobs.downloads_size(uid)
 		_delete_downloads.visible = kept > 0

@@ -26,10 +26,14 @@ const SLOT_KEYWORDS := {
 	"normal": ["normal"],
 	"orm": ["occlusionroughnessmetallic", "orm"],
 	"opacity": ["opacity", "alpha"],
+	"roughness": ["roughness"],
+	"metallic": ["metallic", "metalness"],
+	"ao": ["ambientocclusion"],
 }
-## Slots Godot's FBX importer drops even when the file is found: ORM maps
-## come as ShininessExponent / ReflectionFactor, opacity as TransparencyFactor.
-const GODOT_IGNORED_SLOTS := ["orm", "opacity"]
+## Slots Godot's FBX importer drops even when the file is found: ORM and
+## separate roughness / metallic / AO maps come as ShininessExponent,
+## SpecularColor, ReflectionFactor or AmbientColor, opacity as TransparencyFactor.
+const GODOT_IGNORED_SLOTS := ["orm", "opacity", "roughness", "metallic", "ao"]
 ## Slots the FBX format has no property for, looked up next to the base
 ## color by name (see sibling_entry), with the words that name them.
 const SIBLING_WORDS := {
@@ -39,7 +43,8 @@ const SIBLING_WORDS := {
 ## Name parts that say nothing about which material a texture belongs to.
 ## Slot words are left out too: every base color texture shares "base" and "color".
 const GENERIC_TOKENS := ["tex", "texture", "textures", "map", "light", "dark", "png", "jpg", "low", "high", "final",
-	"base", "color", "colour", "basecolor", "albedo", "diffuse", "normal", "opacity", "alpha", "orm", "occlusion", "roughness", "metallic"]
+	"base", "color", "colour", "basecolor", "albedo", "diffuse", "normal", "opacity", "alpha", "orm", "occlusion", "roughness", "metallic",
+	"ao", "rough", "metalness", "metal"]
 
 
 # MARK: plan
@@ -49,14 +54,16 @@ const GENERIC_TOKENS := ["tex", "texture", "textures", "map", "light", "dark", "
 ## Godot resolves on its own are left out (ORM and opacity never are), except in a material with an
 ## opacity texture: it becomes a shader, which needs every texture. A
 ## material with nothing to fix is absent. `fbx_path` is absolute.
-static func plan(fbx_path: String) -> Dictionary:
+## `scene_materials` names the materials of the imported scene: those the FBX
+## gives no texture get the textures named like the mesh or the material.
+static func plan(fbx_path: String, scene_materials: Array = []) -> Dictionary:
 	var refs := FbxRefs.parse(fbx_path)
 	if not refs.ok:
 		return {}
-	return plan_from_refs(fbx_path, refs.materials)
+	return plan_from_refs(fbx_path, refs.materials, scene_materials)
 
 
-static func plan_from_refs(fbx_path: String, materials: Dictionary) -> Dictionary:
+static func plan_from_refs(fbx_path: String, materials: Dictionary, scene_materials: Array = []) -> Dictionary:
 	var fbx_dir := fbx_path.get_base_dir()
 	var pack_root := pack_root_of(fbx_dir)
 	var pack_textures: Array[String] = []
@@ -81,8 +88,15 @@ static func plan_from_refs(fbx_path: String, materials: Dictionary) -> Dictionar
 			if fixes[slot].has("clear"):
 				cleared[fixes[slot].clear] = int(cleared.get(fixes[slot].clear, 0)) + 1
 		_add_siblings(fbx_dir, materials[material], slots, fixes)
+		_complete_slots(fbx_dir, materials[material], slots, fixes)
 		if not fixes.is_empty():
 			out[material] = fixes
+	for material in scene_materials:
+		if not _plan_key(out, str(material)).is_empty() or not _plan_key(materials, str(material)).is_empty():
+			continue
+		var fixes := _textures_named_like(fbx_path, str(material), pack_textures)
+		if not fixes.is_empty():
+			out[str(material)] = fixes
 	for name in cleared:
 		Log.warning("FBX import: %s references \"%s\", which is not an image, for %d texture(s); those slots are left empty (the FBX doesn't carry its textures)" % [fbx_path.get_file(), name, cleared[name]])
 	return out
@@ -124,6 +138,112 @@ static func _albedo_location(fbx_dir: String, ref: Dictionary, fix: Dictionary) 
 	return {}
 
 
+## Slots completed from the names of the textures, for the maps an FBX often
+## leaves out (only the normal map referenced, say): base color, normal, ORM.
+const NAMED_SLOTS := ["albedo", "normal", "orm", "roughness", "metallic", "ao"]
+## Last name part(s) of a texture -> its slot ("T_Rock_01_A", "Crate_Base_Color").
+const SLOT_SUFFIXES := {
+	"a": "albedo", "bc": "albedo", "basecolor": "albedo", "basecolour": "albedo", "albedo": "albedo",
+	"diffuse": "albedo", "diff": "albedo", "d": "albedo", "col": "albedo", "color": "albedo", "colour": "albedo",
+	"n": "normal", "nrm": "normal", "nor": "normal", "norm": "normal", "normal": "normal", "normalgl": "normal", "normaldx": "normal",
+	"orm": "orm", "arm": "orm", "occlusionroughnessmetallic": "orm",
+	"roughness": "roughness", "rough": "roughness",
+	"metallic": "metallic", "metalness": "metallic", "metal": "metallic",
+	"ao": "ao", "ambientocclusion": "ao", "occlusion": "ao",
+}
+## Last name part of a height map: an FBX "Bump" texture named so is not a normal map.
+const HEIGHT_SUFFIXES := ["height", "bump", "disp", "displacement"]
+## Name prefixes that say what an asset is, not which one (T_, SM_, M_...).
+const ASSET_PREFIXES := ["t", "tx", "tex", "sm", "sk", "s", "m", "mi", "mat"]
+
+
+## [stem, slot] of a texture name without extension: "T_Rock_01_A" ->
+## ["T_Rock_01", "albedo"]; [] when its last part names no handled slot.
+static func texture_slot_suffix(basename: String) -> Array:
+	var parts := basename.replace("-", "_").replace(" ", "_").replace(".", "_").split("_", false)
+	if parts.size() < 2:
+		return []
+	for count in [2, 1]:
+		if parts.size() <= count:
+			continue
+		var suffix := "".join(parts.slice(parts.size() - count)).to_lower()
+		if SLOT_SUFFIXES.has(suffix):
+			var cut := basename.length()
+			for i in count:
+				cut = maxi(basename.rfind("_", cut - 1), maxi(basename.rfind("-", cut - 1), basename.rfind(" ", cut - 1)))
+			return [basename.substr(0, cut), SLOT_SUFFIXES[suffix]] if cut > 0 else []
+	return []
+
+
+## A name reduced for comparison: no type prefix, no separators, lowercase
+## ("SM_Rock_01" and "T_Rock_01" -> "rock01").
+static func stem_key(name: String) -> String:
+	var parts := name.replace("-", "_").replace(" ", "_").replace(".", "_").split("_", false)
+	if parts.size() > 1 and parts[0].to_lower() in ASSET_PREFIXES:
+		parts = parts.slice(1)
+	return "".join(parts).to_lower()
+
+
+## Base color, normal and ORM maps found next to a texture the material does
+## reference: same name, other slot suffix (T_Pallet_Normal -> T_Pallet_BaseColor).
+static func _complete_slots(fbx_dir: String, refs: Array, slots: Array, fixes: Dictionary) -> void:
+	var known: Array[String] = []
+	for i in refs.size():
+		var fix: Dictionary = fixes.get(slots[i], {})
+		if fix.has("file"):
+			known.append(str(fix.file))
+			continue
+		var relative := str(refs[i].relative)
+		var name := (relative if not relative.is_empty() else str(refs[i].file)).get_file()
+		if not relative.is_empty() and FileAccess.file_exists(fbx_dir.path_join(relative)):
+			known.append(fbx_dir.path_join(relative).simplify_path())
+		elif not name.is_empty() and FileAccess.file_exists(fbx_dir.path_join(name)):
+			known.append(fbx_dir.path_join(name))
+	for path in known:
+		var own := texture_slot_suffix(path.get_file().get_basename())
+		if own.is_empty() and str(fixes.get("albedo", {}).get("file", "")) == path and _names_no_slot(path.get_file().get_basename()):
+			own = [path.get_file().get_basename(), "albedo"]
+		if own.is_empty():
+			continue
+		for file in DirAccess.get_files_at(path.get_base_dir()):
+			if not file.get_extension().to_lower() in TEXTURE_EXTENSIONS:
+				continue
+			var other := texture_slot_suffix(file.get_basename())
+			if other.is_empty() or str(other[0]).to_lower() != str(own[0]).to_lower():
+				continue
+			if other[1] in NAMED_SLOTS and not slots.has(other[1]) and not fixes.has(other[1]):
+				fixes[other[1]] = {"file": path.get_base_dir().path_join(file)}
+
+
+## For a material the FBX gives no texture: the pack's textures named like the
+## FBX file or the material ("SM_Rock_01" -> T_Rock_01_A, _N, _ORM), the
+## nearest to the FBX first. {} when none.
+static func _textures_named_like(fbx_path: String, material: String, pack_textures: Array[String]) -> Dictionary:
+	var keys := []
+	for name in [fbx_path.get_file().get_basename(), material.get_slice(":", material.get_slice_count(":") - 1)]:
+		var key := stem_key(name)
+		if key.length() >= 3 and not key in keys:
+			keys.append(key)
+	var fixes := {}
+	var best := {}
+	for path in pack_textures:
+		var named := texture_slot_suffix(path.get_file().get_basename())
+		if named.is_empty() or not named[1] in NAMED_SLOTS or not stem_key(named[0]) in keys:
+			continue
+		var closeness := _shared_prefix(path, fbx_path)
+		if closeness > int(best.get(named[1], -1)):
+			best[named[1]] = closeness
+			fixes[named[1]] = {"file": path}
+	return fixes
+
+
+static func _shared_prefix(a: String, b: String) -> int:
+	var n := 0
+	while n < mini(a.length(), b.length()) and a[n] == b[n]:
+		n += 1
+	return n
+
+
 ## The entry ({"udim": ...} / {"file": ...}) of the first existing file named
 ## like `albedo_name` with its base color word replaced by one of `words`.
 static func sibling_entry(dir: String, albedo_name: String, words: Array) -> Dictionary:
@@ -152,6 +272,9 @@ static func slot_of(property: String, file_names: String) -> String:
 	var names := file_names.to_lower()
 	if p in ["diffusecolor", "maya|basecolor", "base_color", "maya|base_color", "diffusefactor"]:
 		return "albedo"
+	var basename := file_names.strip_edges().get_file().get_basename()
+	if p == "bump" and basename.to_lower().replace("-", "_").get_slice("_", basename.count("_") + basename.count("-")) in HEIGHT_SUFFIXES:
+		return ""
 	if p in ["normalmap", "bump", "maya|normalcamera", "normal_camera"]:
 		return "normal"
 	if p in ["transparencyfactor", "transparentcolor", "opacity", "maya|opacity"]:
@@ -159,6 +282,11 @@ static func slot_of(property: String, file_names: String) -> String:
 	for keyword in SLOT_KEYWORDS.orm:
 		if names.contains(keyword):
 			return "orm"
+	# Separate PBR maps: exporters hang them on whatever property is free
+	# (AmbientColor, SpecularColor, ShininessExponent...), so the name decides.
+	var named := texture_slot_suffix(basename)
+	if not named.is_empty() and named[1] in ["roughness", "metallic", "ao"]:
+		return named[1]
 	return ""
 
 
@@ -186,7 +314,8 @@ static func _resolve(fbx_dir: String, ref: Dictionary, material: String, slot: S
 		return {"udim": tiles} if not tiles.is_empty() else {}
 	# Where Godot's FBX importer looks: the relative path, then the name next to the FBX.
 	# It never applies ORM or opacity textures, even when it finds them.
-	var keep := every or slot in GODOT_IGNORED_SLOTS
+	# Nor a normal map hung on "Bump", which it takes for a height map.
+	var keep := every or slot in GODOT_IGNORED_SLOTS or (slot == "normal" and str(ref.get("property", "")).to_lower() == "bump")
 	if not relative.is_empty() and FileAccess.file_exists(fbx_dir.path_join(relative)):
 		return {"file": fbx_dir.path_join(relative).simplify_path()} if keep else {}
 	if FileAccess.file_exists(fbx_dir.path_join(name)):
@@ -244,16 +373,24 @@ static func find_candidate(pack_textures: Array[String], material: String, slot:
 		for keyword in SLOT_KEYWORDS.get(slot, []):
 			if file.replace("-", "").contains(keyword):
 				has_keyword = true
-		if not has_keyword:
+		# A texture whose name says no slot at all ("T_Mobile_Trees_Trunk") is
+		# a base color, but only for a material all of whose words it carries.
+		var unnamed := not has_keyword and slot == "albedo" and _names_no_slot(path.get_file().get_basename())
+		if not has_keyword and not unnamed:
 			continue
 		var file_tokens := _tokens(path.get_file().get_basename())
 		var dir_tokens := _tokens(path.get_base_dir().get_file())
 		var score := 0
+		var all_words := not material_tokens.is_empty()
 		for t in material_tokens:
 			if t in file_tokens:
 				score += 10
 			elif t in dir_tokens:
 				score += 5
+			if not t in file_tokens:
+				all_words = false
+		if unnamed and not all_words:
+			continue
 		for t in name_tokens:
 			if t in file_tokens or t in dir_tokens:
 				score += 1
@@ -262,6 +399,22 @@ static func find_candidate(pack_textures: Array[String], material: String, slot:
 			best = path
 	# A single shared word with the missing file's name is too weak a hint.
 	return best if best_score >= 2 else ""
+
+
+## True when a texture name carries no slot suffix or slot keyword.
+static func _names_no_slot(basename: String) -> bool:
+	if not texture_slot_suffix(basename).is_empty():
+		return false
+	var file := basename.to_lower().replace("-", "")
+	for slot in SLOT_KEYWORDS:
+		for keyword in SLOT_KEYWORDS[slot]:
+			if file.contains(keyword):
+				return false
+	for word in SIBLING_WORDS.values():
+		for w in word:
+			if file.contains(str(w).to_lower()):
+				return false
+	return true
 
 
 ## Lowercase name parts: split on separators and camel case, digits and
@@ -415,6 +568,10 @@ static func fixed_material(material: Material, fixes: Dictionary, flip_normal_y 
 			"albedo":
 				if out.albedo_texture == null:
 					out.albedo_texture = texture
+					# Leaves and grass: the FBX lost the texture, so it also
+					# never said the material is cut out.
+					if out.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and _has_alpha(texture):
+						out.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 					touched = true
 			"normal":
 				if out.normal_texture == null:
@@ -424,6 +581,24 @@ static func fixed_material(material: Material, fixes: Dictionary, flip_normal_y 
 			"orm":
 				if out.roughness_texture == null and out.metallic_texture == null:
 					_set_orm(out, texture)
+					touched = true
+			"roughness":
+				if out.roughness_texture == null:
+					out.roughness = 1.0
+					out.roughness_texture = texture
+					out.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GRAYSCALE
+					touched = true
+			"metallic":
+				if out.metallic_texture == null:
+					out.metallic = 1.0
+					out.metallic_texture = texture
+					out.metallic_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GRAYSCALE
+					touched = true
+			"ao":
+				if out.ao_texture == null:
+					out.ao_enabled = true
+					out.ao_texture = texture
+					out.ao_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GRAYSCALE
 					touched = true
 	if not touched:
 		return material
@@ -600,6 +775,18 @@ static func _load_texture(abs_path: String) -> Texture2D:
 		Log.warning("FBX import: texture %s is not imported" % abs_path)
 		return null
 	return load(res_path) as Texture2D
+
+
+## True when the texture has transparent pixels.
+static func _has_alpha(texture: Texture2D) -> bool:
+	var image := texture.get_image()
+	if image == null:
+		return false
+	if image.is_compressed():
+		image = image.duplicate()
+		if image.decompress() != OK:
+			return false
+	return image.detect_alpha() != Image.ALPHA_NONE
 
 
 static func _all_nodes(node: Node) -> Array:

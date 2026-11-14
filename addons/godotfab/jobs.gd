@@ -27,6 +27,8 @@ const STATE_LABELS := {
 	State.DONE: "Done", State.ERROR: "Failed", State.CANCELLED: "Cancelled",
 }
 const MAX_DOWNLOADS := 2
+## Folder of a job's staging where the archives it couldn't extract are kept.
+const ARCHIVES_DIR := "archives"
 const MAX_CONVERSIONS := 1
 
 ## Services; the tests replace them with fakes.
@@ -278,14 +280,17 @@ func _download_and_import(uid: String, builds: Array) -> void:
 	if job.cancelled:
 		return
 	_set_state(uid, State.DOWNLOADING)
+	_remove_dir(archives_dir(uid))
 	var files_dirs: Array = []
 	var extra_dirs: Array = []
 	var all_files: Array = []
+	var spans := _progress_spans(builds)
 	for i in builds.size():
 		var build: Dictionary = builds[i]
 		var staging: String = job.staging.path_join("dl%d" % i)
+		var span: Array = spans[i]
 		if build.has("download_url"):
-			var direct: Dictionary = await _download_direct(uid, build, staging, i, builds.size())
+			var direct: Dictionary = await _download_direct(uid, build, staging, span)
 			if job.cancelled:
 				return
 			if not direct.ok:
@@ -298,9 +303,8 @@ func _download_and_import(uid: String, builds: Array) -> void:
 			continue
 		var downloader = downloader_factory.call(build.manifest, build.base_urls, staging, api.fetch_bytes, parallel_chunks)
 		_downloaders[uid] = downloader
-		var base_progress := float(i) / builds.size()
 		downloader.progress.connect(func(done: int, total: int, bytes_done: int, bytes_total: int):
-			job.progress = base_progress + (float(done) / maxf(1.0, total)) / builds.size()
+			job.progress = lerpf(span[0], span[1], float(done) / maxf(1.0, total))
 			job.message = "%d / %d chunks (%s)" % [done, total, _mb(bytes_done, bytes_total)]
 			_emit(uid))
 		if downloader.has_signal("assembling"):
@@ -331,10 +335,7 @@ func _finish(uid: String) -> void:
 	if job.cancelled or job.state != State.IMPORTING:
 		return
 	_set_state(uid, State.DONE)
-	if keep_downloads:
-		_keep_only_chunks(job.staging)
-	else:
-		_remove_dir(job.staging)
+	_clean_staging(job.staging, keep_downloads)
 	job_finished.emit(uid, true)
 
 
@@ -355,24 +356,29 @@ func delete_downloads(uid: String) -> bool:
 	return not DirAccess.dir_exists_absolute(dir)
 
 
-## Keeps the chunk cache of each build (dl*/chunks): files/ was moved into the
-## Unreal project or copied into the Godot project, and export/ was imported.
-static func _keep_only_chunks(staging: String) -> void:
+## Empties a finished job's staging folder: files/ was moved into the Unreal
+## project or copied into the Godot project, and export/ was imported. The
+## archives the user has to extract by hand stay, and with [param keep_chunks]
+## the chunk cache of each build (dl*/chunks) too.
+static func _clean_staging(staging: String, keep_chunks: bool) -> void:
 	var dir := DirAccess.open(staging)
 	if dir == null:
 		return
+	dir.include_hidden = true
 	for sub in dir.get_directories():
 		var path := staging.path_join(sub)
-		if sub.begins_with("dl"):
+		if keep_chunks and sub.begins_with("dl"):
 			for inner in DirAccess.get_directories_at(path):
 				if inner != "chunks":
 					_remove_dir(path.path_join(inner))
 			for file in DirAccess.get_files_at(path):
 				DirAccess.remove_absolute(path.path_join(file))
-		else:
+		elif sub != ARCHIVES_DIR:
 			_remove_dir(path)
 	for file in dir.get_files():
 		DirAccess.remove_absolute(staging.path_join(file))
+	# Gone as well when nothing was kept (a folder with content stays).
+	DirAccess.remove_absolute(staging)
 
 
 static func _dir_size(path: String) -> int:
@@ -442,6 +448,7 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 				continue
 			var info: Dictionary = await api.file_download_info(uid, job.format, str(file.get("uid", "")))
 			info["file_name"] = str(file.get("name", ""))
+			info["size"] = int(file.get("size", 0))
 			pointer_sets.append(info)
 		# Textures often ship apart, as the listing's additional files (a textures.zip next
 		# to a bare FBX). A listing without them answers not ok: nothing to add.
@@ -454,6 +461,7 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 					continue
 				var info: Dictionary = await api.file_download_info(uid, FabApi.ADDITIONAL_FORMAT, str(file.get("uid", "")))
 				info["file_name"] = str(file.get("name", ""))
+				info["size"] = int(file.get("size", 0))
 				info["extra"] = true
 				pointer_sets.append(info)
 	var builds: Array = []
@@ -471,7 +479,7 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 			_fail(uid, pointers.error)
 			return []
 		if not str(pointers.get("download_url", "")).is_empty():
-			builds.append({"download_url": pointers.download_url, "file_name": _direct_file_name(pointers), "extra": pointers.get("extra", false)})
+			builds.append({"download_url": pointers.download_url, "file_name": _direct_file_name(pointers), "extra": pointers.get("extra", false), "size": pointers.get("size", 0)})
 			continue
 		var fetched := await _fetch_manifest(pointers.sources)
 		if not fetched.ok:
@@ -484,17 +492,42 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 	return builds
 
 
+## The part of a job's download bar each of [param builds] takes, as
+## [from, to] pairs: by size when every build tells its own (the files of a
+## direct format), evenly otherwise.
+static func _progress_spans(builds: Array) -> Array:
+	var sizes: Array = builds.map(func(build: Dictionary) -> int: return maxi(0, int(build.get("size", 0))))
+	var total: int = sizes.reduce(func(sum: int, size: int) -> int: return sum + size, 0)
+	var spans: Array = []
+	var at := 0.0
+	for size in sizes:
+		var share: float = 1.0 / builds.size() if sizes.has(0) else float(size) / total
+		spans.append([at, at + share])
+		at += share
+	return spans
+
+
 ## Downloads a single-file build (a signed URL, no manifest) into
-## `<staging>/files/`; {ok, error, files_dir}.
-func _download_direct(uid: String, build: Dictionary, staging: String, index: int, count: int) -> Dictionary:
+## `<staging>/files/`; {ok, error, files_dir}. The job's progress moves inside
+## [param span] ([from, to]) as the bytes arrive.
+func _download_direct(uid: String, build: Dictionary, staging: String, span: Array) -> Dictionary:
 	var job: Dictionary = _jobs[uid]
 	var files_dir := staging.path_join("files")
 	_remove_dir(files_dir)
 	DirAccess.make_dir_recursive_absolute(files_dir)
-	job.progress = float(index) / count
+	job.progress = span[0]
 	job.message = "Downloading %s…" % build.file_name
 	_emit(uid)
-	var response: Dictionary = await api.download_file(build.download_url, files_dir.path_join(build.file_name))
+	var on_progress := func(downloaded: int, total: int) -> void:
+		if job.cancelled:
+			return
+		# The size the server tells, else the one the listing gave.
+		var size: int = total if total > 0 else int(build.get("size", 0))
+		if size > 0:
+			job.progress = lerpf(span[0], span[1], clampf(float(downloaded) / size, 0.0, 1.0))
+		job.message = "Downloading %s (%s)" % [build.file_name, _mb(downloaded, size)]
+		_emit(uid)
+	var response: Dictionary = await api.download_file(build.download_url, files_dir.path_join(build.file_name), 3600.0, on_progress)
 	if not response.ok:
 		return {"ok": false, "error": "Could not download %s: %s" % [build.file_name, response.error], "files_dir": files_dir}
 	return {"ok": true, "error": "", "files_dir": files_dir}
@@ -593,6 +626,8 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 		_fail(uid, "This asset has no %s files" % job.format)
 		return
 	_set_state(uid, State.EXTRACTING)
+	# The .rar / .7z files nothing here could extract.
+	var archives: Array = []
 	for files_dir in files_dirs + extra_dirs:
 		var extracted: Dictionary = await _in_background(uid, func(report: Callable) -> Dictionary:
 			return importer.extract_zips(files_dir, report))
@@ -601,6 +636,7 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 		if not extracted.ok:
 			_fail(uid, extracted.error)
 			return
+		archives.append_array(extracted.get("archives", []))
 	_set_state(uid, State.IMPORTING)
 	var target := _target_res_dir(job)
 	job.target = target
@@ -609,10 +645,40 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 		return importer.import_direct(files_dirs[0], target, meta, "", extra_dirs, report))
 	if job.cancelled:
 		return
+	if not archives.is_empty():
+		_keep_archives(job, archives)
 	if not imported.ok:
 		_fail(uid, imported.error)
 		return
 	job.scene = imported.scene
+
+
+## Moves the archives the job couldn't extract to `archives_dir(uid)`, where
+## they outlive the cleanup: the user extracts them by hand, and the asset's
+## details warn about them (`unextracted_archives`).
+func _keep_archives(job: Dictionary, archives: Array) -> void:
+	var dir := archives_dir(job.uid)
+	DirAccess.make_dir_recursive_absolute(dir)
+	for archive: String in archives:
+		var name := archive.get_file()
+		var n := 2
+		while FileAccess.file_exists(dir.path_join(name)):
+			name = "%s_%d.%s" % [archive.get_file().get_basename(), n, archive.get_extension()]
+			n += 1
+		DirAccess.rename_absolute(archive, dir.path_join(name))
+	Log.warning("%s: archives left unextracted, kept in %s" % [job.title, dir])
+
+
+## Folder holding the archives of [param uid] that couldn't be extracted.
+func archives_dir(uid: String) -> String:
+	return staging_root.path_join(uid).path_join(ARCHIVES_DIR)
+
+
+## File names of the archives (.rar, .7z) the download of [param uid] left
+## unextracted; they stay in `archives_dir(uid)` until the downloads are deleted.
+func unextracted_archives(uid: String) -> Array:
+	var dir := archives_dir(uid)
+	return Array(DirAccess.get_files_at(dir)) if DirAccess.dir_exists_absolute(dir) else []
 
 
 ## Runs [param work] on a background thread so the editor stays responsive

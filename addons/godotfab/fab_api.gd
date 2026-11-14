@@ -402,8 +402,9 @@ func fetch_bytes(url: String, timeout := 120.0) -> Dictionary:
 
 
 ## GET streamed straight to [param path] (large direct downloads).
-func download_file(url: String, path: String, timeout := 3600.0) -> Dictionary:
-	return await fetch.call({"method": "GET", "url": url, "headers": PackedStringArray(), "timeout": timeout, "download_file": path})
+## [param progress] is called as (downloaded, total) bytes while it runs, see Http.
+func download_file(url: String, path: String, timeout := 3600.0, progress := Callable()) -> Dictionary:
+	return await fetch.call({"method": "GET", "url": url, "headers": PackedStringArray(), "timeout": timeout, "download_file": path, "progress": progress})
 
 
 # MARK: library actions

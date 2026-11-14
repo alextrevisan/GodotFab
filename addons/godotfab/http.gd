@@ -5,7 +5,10 @@ extends RefCounted
 ##
 ## req: {method: "GET"|"POST"|"DELETE", url: String, headers: PackedStringArray,
 ##       body: String|PackedByteArray, timeout: float,
-##       download_file: String (optional: the body is written there, not returned)}
+##       download_file: String (optional: the body is written there, not returned),
+##       progress: Callable(downloaded: int, total: int) (optional: called every
+##       PROGRESS_INTERVAL while the body arrives; total is -1 when the server
+##       doesn't tell the size)}
 ## result: {ok: bool (transport ok and 2xx), status: int, body: PackedByteArray,
 ##          json: Variant|null, headers: PackedStringArray, error: String}
 
@@ -14,6 +17,8 @@ const Log = preload("res://addons/godotfab/log.gd")
 ## Epic's services expect a launcher user agent.
 const USER_AGENT := "UELauncher/17.0.1-37584233+++Portal+Release-Live Windows/10.0.19043.1.0.64bit"
 const DEFAULT_TIMEOUT := 60.0
+## Seconds between two calls of a request's `progress`.
+const PROGRESS_INTERVAL := 0.2
 
 ## The node the HTTPRequest children are added to.
 var parent: Node
@@ -57,7 +62,17 @@ func fetch(req: Dictionary) -> Dictionary:
 		request.queue_free()
 		result.error = "request failed to start (%s)" % error_string(err)
 		return result
-	var response: Array = await request.request_completed
+	var progress: Callable = req.get("progress", Callable())
+	var response: Array = []
+	if progress.is_valid():
+		request.request_completed.connect(func(transport: int, status: int, response_headers: PackedStringArray, response_body: PackedByteArray) -> void:
+			response.assign([transport, status, response_headers, response_body]))
+		while response.is_empty():
+			await parent.get_tree().create_timer(PROGRESS_INTERVAL).timeout
+			if response.is_empty():
+				progress.call(request.get_downloaded_bytes(), request.get_body_size())
+	else:
+		response = await request.request_completed
 	request.queue_free()
 	var transport: int = response[0]
 	result.status = response[1]

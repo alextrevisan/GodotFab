@@ -64,9 +64,16 @@ class FakeApi extends RefCounted:
 		return {"ok": true, "error": "", "unauthorized": false, "build_version": "1",
 			"sources": [{"manifest_url": "https://cdn/m?sig", "base_url": "https://cdn"}]}
 
-	func download_file(url: String, path: String, _timeout := 3600.0) -> Dictionary:
+	## [downloaded, total] byte counts every download reports before it ends
+	## (total -1: the server doesn't tell the size).
+	var download_progress: Array = []
+
+	func download_file(url: String, path: String, _timeout := 3600.0, progress := Callable()) -> Dictionary:
 		calls.append(["download_file", url, path])
 		await Engine.get_main_loop().process_frame
+		for step in download_progress:
+			progress.call(step[0], step[1])
+			await Engine.get_main_loop().process_frame
 		if download_ok:
 			var f := FileAccess.open(path, FileAccess.WRITE)
 			f.store_string("zip")
@@ -157,9 +164,18 @@ class FakeImporter extends RefCounted:
 	func import_export(export_dir: String, target_res_dir: String, meta: Dictionary, target_abs := "", consume := false, _progress := Callable()) -> Dictionary:
 		calls.append(["import_export", export_dir, target_res_dir, meta])
 		return {"ok": import_ok, "error": "" if import_ok else "import failed", "scene": target_res_dir + "/Overview.tscn"}
+	## Name of an archive the extraction leaves behind (a .rar no tool could open).
+	var leave_archive := ""
 	func extract_zips(dir: String, _progress := Callable()) -> Dictionary:
 		calls.append(["extract_zips", dir])
-		return {"ok": true, "error": "", "extracted": 1}
+		var archives: Array = []
+		if leave_archive != "":
+			DirAccess.make_dir_recursive_absolute(dir.path_join("source"))
+			var f := FileAccess.open(dir.path_join("source").path_join(leave_archive), FileAccess.WRITE)
+			f.store_string("Rar!")
+			f.close()
+			archives.append(dir.path_join("source").path_join(leave_archive))
+		return {"ok": true, "error": "", "extracted": 1, "archives": archives}
 	## Runs on the jobs' background thread: reports progress and lasts a few
 	## frames, so the main thread sees the report.
 	func import_direct(files_dir: String, target_res_dir: String, meta: Dictionary, _target_abs := "", extras: Array = [], progress := Callable()) -> Dictionary:

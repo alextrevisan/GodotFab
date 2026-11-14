@@ -203,6 +203,83 @@ func test_import_direct_copies_models_and_textures() -> void:
 	assert_eq(meta.get("format"), "gltf")
 
 
+func test_import_direct_keeps_every_model_and_the_textures_next_to_it() -> void:
+	# Fab's "Rock Collection 04" FBX zip: one folder per rock, each with Meshes/ and
+	# Textures/. Only the wrapper folders above them are dropped.
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	for n in ["01", "02"]:
+		write_file(files.path_join("rocks_extracted/Rock_%s/Meshes/SM_Rock_%s.fbx" % [n, n]), "fbx")
+		write_file(files.path_join("rocks_extracted/Rock_%s/Textures/T_Rock_%s_A.tga" % [n, n]), "tga")
+	var target := root.path_join("fab_assets/rocks")
+	var res := GodotImport.import_direct(files, "res://fab_assets/rocks", {}, target)
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(res.scene, "res://fab_assets/rocks/Rock_01/Meshes/SM_Rock_01.fbx")
+	for n in ["01", "02"]:
+		assert_true(FileAccess.file_exists(target.path_join("Rock_%s/Meshes/SM_Rock_%s.fbx" % [n, n])), "model %s" % n)
+		assert_true(FileAccess.file_exists(target.path_join("Rock_%s/Textures/T_Rock_%s_A.tga" % [n, n])), "textures %s" % n)
+
+
+func test_import_direct_drops_texture_copies_away_from_the_model() -> void:
+	# Fab's "Chair" (Max3d): source/Chair.zip holds chair.fbx + textures/, and the
+	# same textures come again in a textures/ folder next to source/.
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	write_file(files.path_join("source/Chair_extracted/Chair/chair.fbx"), "fbx")
+	for map in ["Albedo", "Normal"]:
+		write_file(files.path_join("source/Chair_extracted/Chair/textures/chair_%s.png" % map), "png " + map)
+		# Fab re-encodes its copy: same name, other bytes.
+		write_file(files.path_join("textures/chair_%s.png" % map), "png, palette " + map)
+	# A texture the model's folder doesn't have stays.
+	write_file(files.path_join("textures/chair_AO.png"), "ao")
+	var target := root.path_join("fab_assets/chair")
+	var res := GodotImport.import_direct(files, "res://fab_assets/chair", {}, target)
+	assert_true(res.ok, res.get("error", ""))
+	assert_true(FileAccess.file_exists(target.path_join("source/Chair_extracted/Chair/textures/chair_Albedo.png")), "the copy next to the model stays")
+	assert_false(FileAccess.file_exists(target.path_join("textures/chair_Albedo.png")), "the copy away from it goes")
+	assert_false(FileAccess.file_exists(target.path_join("textures/chair_Normal.png")))
+	assert_true(FileAccess.file_exists(target.path_join("textures/chair_AO.png")))
+
+
+func test_import_direct_without_other_textures_drops_the_wrapper_folders() -> void:
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	write_file(files.path_join("source/Chair_extracted/Chair/chair.fbx"), "fbx")
+	write_file(files.path_join("source/Chair_extracted/Chair/textures/chair_Albedo.png"), "png")
+	write_file(files.path_join("textures/chair_Albedo.png"), "png")
+	var target := root.path_join("fab_assets/chair")
+	var res := GodotImport.import_direct(files, "res://fab_assets/chair", {}, target)
+	assert_eq(res.scene, "res://fab_assets/chair/chair.fbx")
+	assert_true(FileAccess.file_exists(target.path_join("textures/chair_Albedo.png")))
+	assert_false(DirAccess.dir_exists_absolute(target.path_join("source")))
+
+
+func test_import_direct_presets_textures_for_3d() -> void:
+	# Without a preset Godot imports each texture for 2D, sees it used in 3D
+	# and reimports it, nested in the scene's import ("Task 'reimport' already exists").
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	write_file(files.path_join("Model/SM_Tree.fbx"), "fbx")
+	for name in ["T_Tree_Leaf.TGA", "T_Tree_Trunk_normal.TGA", "Sky.exr"]:
+		write_file(files.path_join("Textures/" + name), "img")
+	write_file(files.path_join("Textures/T_Tree_Bark.png"), "img")
+	write_file(files.path_join("Textures/T_Tree_Bark.png.import"), "[remap]\nimporter=\"texture\"\n")
+	var target := root.path_join("fab_assets/tree")
+	assert_true(GodotImport.import_direct(files, "res://fab_assets/tree", {}, target).ok)
+	var leaf := ConfigFile.new()
+	assert_eq(leaf.load(target.path_join("Textures/T_Tree_Leaf.TGA.import")), OK)
+	assert_eq(leaf.get_value("remap", "importer"), "texture")
+	assert_eq(leaf.get_value("params", "compress/mode"), 2, "VRAM compressed")
+	assert_eq(leaf.get_value("params", "mipmaps/generate"), true)
+	assert_eq(leaf.get_value("params", "detect_3d/compress_to"), 0)
+	assert_eq(leaf.get_value("params", "compress/normal_map"), 2)
+	assert_eq(leaf.get_value("params", "roughness/mode"), 1)
+	var normal := ConfigFile.new()
+	normal.load(target.path_join("Textures/T_Tree_Trunk_normal.TGA.import"))
+	assert_eq(normal.get_value("params", "compress/normal_map"), 1)
+	assert_false(FileAccess.file_exists(target.path_join("Textures/Sky.exr.import")), "float textures keep Godot's defaults")
+
+
 func test_extract_and_import_direct_report_progress() -> void:
 	var root := tmp_dir()
 	var files := root.path_join("files")
@@ -350,3 +427,68 @@ func test_import_export_consume_moves_binaries() -> void:
 	var kept := GodotImport.import_export(root.path_join("export2_missing"), "res://fab_assets/p", {"uid": "u1"}, target)
 	assert_false(kept.ok)
 	assert_true(FileAccess.file_exists(target.path_join("Pack/Meshes/A.glb")), "a failed import leaves the target alone")
+
+
+# --- Archives Godot can't read (.rar, .7z) -------------------------------------
+
+## A stand-in for unrar/unar: a shell script called as `<script> <archive> <out>`.
+func _fake_extractor(dir: String, body: String) -> Dictionary:
+	var path := dir.path_join("fake_extractor.sh")
+	write_file(path, "#!/bin/sh\n" + body + "\n")
+	FileAccess.set_unix_permissions(path, 493)
+	return {"name": "fake", "path": path, "args": ["%a", "%o"]}
+
+
+func test_extract_reports_archives_it_cannot_extract() -> void:
+	var root := tmp_dir()
+	_make_zip(root.path_join("files/chair.zip"), {"source/Chair.rar": "Rar!", "textures/a.png": "png"})
+	var res := GodotImport.extract_zips(root.path_join("files"), Callable(), [])
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(res.extracted, 1, "the zip only")
+	var rar := root.path_join("files/chair_extracted/source/Chair.rar")
+	assert_eq(res.archives, [rar])
+	assert_true(FileAccess.file_exists(rar), "the archive stays for the user")
+
+
+func test_extract_archive_with_the_first_extractor_that_works() -> void:
+	if OS.get_name() == "Windows":
+		assert_true(true, "shell script extractor: not on Windows")
+		return
+	var root := tmp_dir()
+	var rar := root.path_join("files/source/Chair.rar")
+	write_file(rar, "Rar!")
+	# Like a 7z built without the RAR codec: it runs and fails.
+	var broken := _fake_extractor(root.path_join("a"), 'echo junk > "$2/partial"; exit 2')
+	var res := GodotImport.extract_zips(root.path_join("files"), Callable(), [broken])
+	assert_true(res.ok)
+	assert_eq(res.archives, [rar])
+	assert_false(DirAccess.dir_exists_absolute(rar.get_basename() + "_extracted"), "nothing half extracted is left")
+	var working := _fake_extractor(root.path_join("b"), 'mkdir -p "$2/Chair" && echo fbx > "$2/Chair/chair.fbx"')
+	res = GodotImport.extract_zips(root.path_join("files"), Callable(), [broken, working])
+	assert_eq(res.extracted, 1)
+	assert_eq(res.archives, [])
+	assert_true(FileAccess.file_exists(root.path_join("files/source/Chair_extracted/Chair/chair.fbx")))
+	assert_false(FileAccess.file_exists(rar), "archive deleted once extracted")
+
+
+func test_available_extractors() -> void:
+	var root := tmp_dir()
+	write_file(root.path_join("bin/unar"), "")
+	write_file(root.path_join("bin2/7z"), "")
+	var path_env := root.path_join("missing") + ":" + root.path_join("bin") + ":" + root.path_join("bin2")
+	var found := GodotImport.available_extractors("Linux", path_env)
+	assert_eq(found.map(func(t): return t.name), ["unar", "7z"])
+	assert_eq(found[0].path, root.path_join("bin/unar"))
+	assert_eq(GodotImport.available_extractors("Windows", path_env), [], "Windows: none looked for")
+	assert_eq(GodotImport.available_extractors("Linux", ""), [])
+
+
+func test_archive_warning() -> void:
+	var windows := GodotImport.archive_warning(["Chair.rar"], "res://fab_assets/chair", "Windows")
+	assert_contains(windows, "Chair.rar was not extracted")
+	assert_contains(windows, "can't extract .rar or .7z archives on Windows")
+	assert_contains(windows, "res://fab_assets/chair")
+	var linux := GodotImport.archive_warning(["Chair.rar", "b.7z"], "res://fab_assets/chair", "Linux")
+	assert_contains(linux, "Chair.rar, b.7z was not extracted")
+	assert_contains(linux, "Install unar, unrar or bsdtar")
+	assert_contains(linux, "res://fab_assets/chair")

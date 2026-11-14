@@ -6,6 +6,7 @@ extends RefCounted
 
 const Log = preload("res://addons/godotfab/log.gd")
 const ExportFixes = preload("res://addons/godotfab/export_fixes.gd")
+const FbxTextureFix = preload("res://addons/godotfab/fbx_texture_fix.gd")
 
 const MANIFEST_FILE := ".godotfab.json"
 const SLUG_MAX := 48
@@ -15,6 +16,18 @@ const MODEL_EXTENSIONS := ["glb", "gltf", "bin", "fbx", "obj", "mtl"]
 const TEXTURE_EXTENSIONS := ["png", "jpg", "jpeg", "tga", "exr", "webp", "tif", "tiff", "bmp", "hdr"]
 ## Scene candidates for the direct path, in order of preference.
 const SCENE_EXTENSIONS := ["glb", "gltf", "fbx"]
+## Archives Godot can't read; an installed extractor opens them, see `extract_zips`.
+const ARCHIVE_EXTENSIONS := ["rar", "7z"]
+## Command line extractors looked for on PATH (not on Windows), best first.
+## In `args`, %a is the archive and %o the output folder.
+const EXTRACTORS := [
+	{"name": "unar", "args": ["-quiet", "-force-overwrite", "-no-directory", "-output-directory", "%o", "%a"]},
+	{"name": "unrar", "args": ["x", "-y", "-inul", "%a", "%o/"]},
+	{"name": "bsdtar", "args": ["-xf", "%a", "-C", "%o"]},
+	{"name": "7z", "args": ["x", "-y", "-o%o", "%a"]},
+	{"name": "7zz", "args": ["x", "-y", "-o%o", "%a"]},
+	{"name": "7za", "args": ["x", "-y", "-o%o", "%a"]},
+]
 
 
 # --- Names and paths -----------------------------------------------------------
@@ -296,32 +309,115 @@ static func _strip_import_cache_lines(text: String) -> String:
 ## `<name>_extracted/` folder next to it and deletes the zip. Entries whose path
 ## would escape that folder abort the extraction of that zip.
 ## [param progress] is called as (done, total, label) per entry.
-static func extract_zips(dir: String, progress := Callable()) -> Dictionary:
+##
+## Godot reads no `.rar` or `.7z` (`ARCHIVE_EXTENSIONS`): those are handed to
+## the [param extractors] (`available_extractors()` when null), extracted the
+## same way when one of them manages it. The ones nothing could extract stay
+## where they are and come back in `archives` (absolute paths); that is not an
+## error, the caller warns the user about them.
+static func extract_zips(dir: String, progress := Callable(), extractors = null) -> Dictionary:
 	var extracted := 0
+	var left: Array = []
 	while true:
-		var zips := _find_zips(dir.rstrip("/"))
-		if zips.is_empty():
+		var found := _find_zips(dir.rstrip("/"), ["zip"] + ARCHIVE_EXTENSIONS).filter(func(path: String) -> bool: return not path in left)
+		if found.is_empty():
 			break
-		for zip_path in zips:
-			var err := _extract_zip(zip_path, progress)
-			if err != "":
-				return {"ok": false, "error": err, "extracted": extracted}
-			extracted += 1
-	return {"ok": true, "error": "", "extracted": extracted}
+		for path: String in found:
+			if path.get_extension().to_lower() == "zip":
+				var err := _extract_zip(path, progress)
+				if err != "":
+					return {"ok": false, "error": err, "extracted": extracted, "archives": left}
+				extracted += 1
+				continue
+			if extractors == null:
+				extractors = available_extractors()
+			_report(progress, 0, 0, "Extracting %s" % path.get_file())
+			if _extract_archive(path, extractors):
+				extracted += 1
+			else:
+				left.append(path)
+	if not left.is_empty():
+		Log.warning("Could not extract %s (extractors found: %s)" % [", ".join(PackedStringArray(left)),
+			", ".join(PackedStringArray(extractors.map(func(tool: Dictionary) -> String: return tool.name))) if not extractors.is_empty() else "none"])
+	return {"ok": true, "error": "", "extracted": extracted, "archives": left}
 
 
-static func _find_zips(dir: String) -> Array[String]:
+static func _find_zips(dir: String, extensions: Array = ["zip"]) -> Array[String]:
 	var found: Array[String] = []
 	var d := DirAccess.open(dir)
 	if d == null:
 		return found
 	d.include_hidden = true
 	for file in d.get_files():
-		if file.get_extension().to_lower() == "zip":
+		if file.get_extension().to_lower() in extensions:
 			found.append(dir.path_join(file))
 	for sub in d.get_directories():
-		found.append_array(_find_zips(dir.path_join(sub)))
+		found.append_array(_find_zips(dir.path_join(sub), extensions))
 	return found
+
+
+## The archive extractors installed on this machine, in order of preference:
+## {name, path, args} of each `EXTRACTORS` entry found on PATH. None on
+## Windows: the addon doesn't extract these archives there.
+static func available_extractors(os_name := OS.get_name(), path_env := OS.get_environment("PATH")) -> Array:
+	var found: Array = []
+	if os_name == "Windows":
+		return found
+	var dirs := path_env.split(":", false)
+	for tool in EXTRACTORS:
+		for dir in dirs:
+			var path := dir.path_join(tool.name)
+			if FileAccess.file_exists(path):
+				found.append({"name": tool.name, "path": path, "args": tool.args})
+				break
+	return found
+
+
+## Extracts [param archive] into `<name>_extracted/` next to it with the first
+## of [param tools] that manages it, then deletes the archive. A tool that
+## fails (a 7z built without the RAR codec, say) leaves nothing behind.
+static func _extract_archive(archive: String, tools: Array) -> bool:
+	var out_dir := archive.get_basename() + "_extracted"
+	for tool in tools:
+		if DirAccess.make_dir_recursive_absolute(out_dir) != OK:
+			return false
+		var args := PackedStringArray()
+		for arg in tool.args:
+			args.append(str(arg).replace("%a", archive).replace("%o", out_dir))
+		var output: Array = []
+		var code := OS.execute(str(tool.path), args, output, true)
+		_remove_links(out_dir)
+		if code == 0 and not (DirAccess.get_files_at(out_dir).is_empty() and DirAccess.get_directories_at(out_dir).is_empty()):
+			DirAccess.remove_absolute(archive)
+			Log.verbose("Extracted %s with %s" % [archive.get_file(), tool.name])
+			return true
+		Log.verbose("%s could not extract %s (exit %d): %s" % [tool.name, archive.get_file(), code, "".join(PackedStringArray(output)).strip_edges().right(300)])
+		_remove_dir(out_dir)
+	return false
+
+
+## Deletes the symbolic links under [param dir]: an archive must not point the
+## import at files outside its own folder.
+static func _remove_links(dir: String) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	d.include_hidden = true
+	for file in d.get_files():
+		if d.is_link(dir.path_join(file)):
+			DirAccess.remove_absolute(dir.path_join(file))
+	for sub in d.get_directories():
+		if d.is_link(dir.path_join(sub)):
+			DirAccess.remove_absolute(dir.path_join(sub))
+		else:
+			_remove_links(dir.path_join(sub))
+
+
+## What to tell the user about the archives [param names] left unextracted.
+static func archive_warning(names: Array, target_res_dir: String, os_name := OS.get_name()) -> String:
+	var why := "GodotFab can't extract .rar or .7z archives on Windows. Extract it yourself" if os_name == "Windows" \
+		else "no tool able to open it was found. Install unar, unrar or bsdtar and download again, or extract it yourself"
+	return "%s was not extracted (the model may be inside it): %s and copy its files into %s." % [", ".join(PackedStringArray(names)), why, target_res_dir]
 
 
 static func _extract_zip(zip_path: String, progress := Callable()) -> String:
@@ -389,14 +485,15 @@ static func import_direct(files_dir: String, target_res_dir: String, meta: Dicti
 	if not DirAccess.dir_exists_absolute(src):
 		return _fail("Files folder not found: %s" % src)
 	var target := _target_abs_of(target_res_dir, target_abs)
-	var root := _model_root(src)
+	var skip := _texture_copies(src)
+	var root := _content_root(src, skip)
 	var count := [0]
 	var on_file := func(file: String) -> void:
 		count[0] += 1
 		_report(progress, count[0], 0, "Copying %s" % file)
 	return _replace_target(target, func() -> Dictionary:
 		var copied: Array[String] = []
-		var err := _copy_assets(root, target, "", copied, on_file)
+		var err := _copy_assets(root, target, "", copied, on_file, skip)
 		if err != "":
 			return _fail(err)
 		for extra in extras:
@@ -405,6 +502,7 @@ static func import_direct(files_dir: String, target_res_dir: String, meta: Dicti
 				return _fail(err)
 		if copied.is_empty():
 			return _fail("No model or texture files found in %s" % src)
+		_preset_textures(target)
 		var scene := ""
 		for ext in SCENE_EXTENSIONS:
 			for rel in copied:
@@ -417,23 +515,109 @@ static func import_direct(files_dir: String, target_res_dir: String, meta: Dicti
 	)
 
 
-## The shallowest directory (breadth-first, sorted) that directly contains a
-## model file; `src` itself when there is none.
-static func _model_root(src: String) -> String:
-	var queue: Array[String] = [src]
-	while not queue.is_empty():
-		var dir: String = queue.pop_front()
-		var d := DirAccess.open(dir)
-		if d == null:
+## Writes a 3D import preset (VRAM compressed, mipmaps, no 3D/normal/
+## roughness detection) for each texture under `dir` without a .import. Godot
+## otherwise imports a texture for 2D, sees it used in 3D during the scene's
+## import and reimports it in a second "reimport" task nested in the first,
+## which fails ("Task 'reimport' already exists"). Float images (EXR, HDR)
+## keep Godot's defaults.
+static func _preset_textures(dir: String) -> void:
+	for file in DirAccess.get_files_at(dir):
+		var ext := file.get_extension().to_lower()
+		if not ext in TEXTURE_EXTENSIONS or ext in ["exr", "hdr"]:
 			continue
-		for file in _sorted_files(dir):
-			if file.get_extension().to_lower() in MODEL_EXTENSIONS:
-				return dir
-		var subs := d.get_directories()
-		subs.sort()
-		for sub in subs:
-			queue.append(dir.path_join(sub))
-	return src
+		var path := dir.path_join(file)
+		if FileAccess.file_exists(path + ".import"):
+			continue
+		var f := FileAccess.open(path + ".import", FileAccess.WRITE)
+		if f:
+			f.store_string(texture_import_preset(file))
+			f.close()
+	for sub in DirAccess.get_directories_at(dir):
+		_preset_textures(dir.path_join(sub))
+
+
+## The .import text of a texture used by a 3D model; a name ending in a
+## normal map suffix (_N, _Normal) gets normal map compression.
+static func texture_import_preset(file: String) -> String:
+	var slot := FbxTextureFix.texture_slot_suffix(file.get_basename())
+	var is_normal: bool = not slot.is_empty() and slot[1] == "normal"
+	return "\n".join([
+		"[remap]", "", "importer=\"texture\"", "type=\"CompressedTexture2D\"", "",
+		"[params]", "",
+		"compress/mode=2",
+		"compress/normal_map=%d" % (1 if is_normal else 2),
+		"mipmaps/generate=true",
+		"roughness/mode=1",
+		"detect_3d/compress_to=0",
+		"",
+	])
+
+
+## The deepest folder holding every model and texture under `src`: wrapper
+## folders (`<zip>_extracted/<Pack>/`) are dropped, while a pack laid out as
+## `Rock_01/Meshes/*.fbx` + `Rock_01/Textures/*.tga` keeps all of it. `src`
+## itself when there is no asset.
+static func _content_root(src: String, skip: Dictionary = {}) -> String:
+	var dirs: Array[String] = []
+	_asset_dirs(src, dirs, skip)
+	if dirs.is_empty():
+		return src
+	var common := dirs[0]
+	for dir in dirs:
+		while not (dir + "/").begins_with(common + "/"):
+			common = common.get_base_dir()
+	return common if (common + "/").begins_with(src + "/") else src
+
+
+static func _asset_dirs(dir: String, out: Array[String], skip: Dictionary = {}) -> void:
+	for file in DirAccess.get_files_at(dir):
+		var ext := file.get_extension().to_lower()
+		if (ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS) and not skip.has(dir.path_join(file)):
+			out.append(dir)
+			break
+	for sub in DirAccess.get_directories_at(dir):
+		_asset_dirs(dir.path_join(sub), out, skip)
+
+
+## The textures under `src` that only repeat one shipped with a model, as a
+## set {absolute path: true}: named like a texture in a model's folder (or
+## below it), while they sit outside every model's folder. Fab zips often
+## carry `source/<pack>.zip` (model + textures) and the same `textures/`
+## again next to it, re-encoded by Fab (so the bytes differ). Textures inside
+## a model's folder always stay: that model references them.
+static func _texture_copies(src: String) -> Dictionary:
+	var model_dirs: Array[String] = []
+	var textures: Array[String] = []
+	_models_and_textures(src, model_dirs, textures)
+	var inside := {}
+	var outside: Array[String] = []
+	for path in textures:
+		var near := false
+		for dir in model_dirs:
+			if (path.get_base_dir() + "/").begins_with(dir + "/"):
+				near = true
+				break
+		if not near:
+			outside.append(path)
+			continue
+		inside[path.get_file().to_lower()] = true
+	var out := {}
+	for path in outside:
+		if inside.has(path.get_file().to_lower()):
+			out[path] = true
+	return out
+
+
+static func _models_and_textures(dir: String, model_dirs: Array[String], textures: Array[String]) -> void:
+	for file in DirAccess.get_files_at(dir):
+		var ext := file.get_extension().to_lower()
+		if ext in SCENE_EXTENSIONS and not dir in model_dirs:
+			model_dirs.append(dir)
+		elif ext in TEXTURE_EXTENSIONS:
+			textures.append(dir.path_join(file))
+	for sub in DirAccess.get_directories_at(dir):
+		_models_and_textures(dir.path_join(sub), model_dirs, textures)
 
 
 ## Copies the assets of an additional-files folder into [param dst]: an
@@ -463,7 +647,7 @@ static func _copy_extras(src: String, dst: String, on_file := Callable()) -> Str
 	return ""
 
 
-static func _copy_assets(src: String, dst: String, relative: String, copied: Array[String], on_file := Callable()) -> String:
+static func _copy_assets(src: String, dst: String, relative: String, copied: Array[String], on_file := Callable(), skip: Dictionary = {}) -> String:
 	var src_dir := src.path_join(relative) if relative != "" else src
 	var d := DirAccess.open(src_dir)
 	if d == null:
@@ -471,7 +655,7 @@ static func _copy_assets(src: String, dst: String, relative: String, copied: Arr
 	var dst_dir := dst.path_join(relative) if relative != "" else dst
 	for file in _sorted_files(src_dir):
 		var ext := file.get_extension().to_lower()
-		if not (ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS):
+		if not (ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS) or skip.has(src_dir.path_join(file)):
 			continue
 		var err := DirAccess.make_dir_recursive_absolute(dst_dir)
 		if err != OK:
@@ -485,7 +669,7 @@ static func _copy_assets(src: String, dst: String, relative: String, copied: Arr
 	var subs := d.get_directories()
 	subs.sort()
 	for sub in subs:
-		var sub_err := _copy_assets(src, dst, relative.path_join(sub) if relative != "" else sub, copied, on_file)
+		var sub_err := _copy_assets(src, dst, relative.path_join(sub) if relative != "" else sub, copied, on_file, skip)
 		if sub_err != "":
 			return sub_err
 	return ""
@@ -531,16 +715,27 @@ static func _finish(target: String, meta: Dictionary, scene: String) -> Dictiona
 	return {"ok": true, "error": "", "scene": scene}
 
 
-## Asks the editor to scan for the new files; deferred to the main thread
-## when the import runs on a background thread.
+## Asks the editor to scan for the new files, once it is idle: a scan
+## started while it imports (a deferred call runs inside its progress
+## dialog) nests a second "reimport" task and fails ("Task 'reimport'
+## already exists"). Requests made meanwhile share that one scan.
+static var _scan_pending := false
+
+
 static func _rescan() -> void:
-	if not Engine.is_editor_hint():
+	if not Engine.is_editor_hint() or _scan_pending:
 		return
+	_scan_pending = true
+	_scan_when_idle.call_deferred()
+
+
+static func _scan_when_idle() -> void:
 	var fs := EditorInterface.get_resource_filesystem()
-	if OS.get_thread_caller_id() == OS.get_main_thread_id():
-		fs.scan()
-	else:
-		fs.scan.call_deferred()
+	if fs.is_scanning() or fs.is_importing():
+		(Engine.get_main_loop() as SceneTree).create_timer(0.5).timeout.connect(_scan_when_idle, CONNECT_ONE_SHOT)
+		return
+	_scan_pending = false
+	fs.scan()
 
 
 static func _report(progress: Callable, done: int, total: int, label: String) -> void:
