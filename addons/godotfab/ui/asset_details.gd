@@ -49,6 +49,9 @@ var _action: Button
 var _secondary: Button
 var _convert_again: Button
 var _delete_downloads: Button
+var _archive_box: VBoxContainer
+var _archive_label: Label
+var _archive_folder: LinkButton
 var _delete_confirm: ConfirmationDialog
 var _status: Label
 var _error_box: VBoxContainer
@@ -120,6 +123,21 @@ func setup(new_gallery: Node) -> void:
 	_tags.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_tags.add_theme_color_override("font_color", get_theme_color("font_disabled_color", "Editor"))
 	right.add_child(_tags)
+
+	# Archives the download couldn't extract (.rar, .7z): what to do, and a
+	# link that opens the folder they were kept in.
+	_archive_box = VBoxContainer.new()
+	_archive_box.visible = false
+	content.add_child(_archive_box)
+	_archive_label = Label.new()
+	_archive_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_archive_label.add_theme_color_override("font_color", get_theme_color("warning_color", "Editor"))
+	_archive_box.add_child(_archive_label)
+	_archive_folder = LinkButton.new()
+	_archive_folder.underline = LinkButton.UNDERLINE_MODE_ALWAYS
+	_archive_folder.tooltip_text = "Opens the folder in the file manager"
+	_archive_folder.pressed.connect(func(): OS.shell_open(_archive_folder.get_meta("folder", "")))
+	_archive_box.add_child(_archive_folder)
 
 	_error_box = VBoxContainer.new()
 	_error_box.visible = false
@@ -560,6 +578,14 @@ func _update_action() -> void:
 			_status.text += " Not in your library yet."
 		elif is_unreal and logged_in and _in_library.get(uid, false) == true:
 			_status.text += " In your library."
+	var archives: Array = gallery.jobs.unextracted_archives(uid) if not state in Jobs.ACTIVE else []
+	_archive_box.visible = not archives.is_empty()
+	if _archive_box.visible:
+		var target := str(job.get("target", "res://" + str(downloaded.get("folder", ""))))
+		_archive_label.text = Jobs.archive_warning(archives, target)
+		var folder: String = gallery.jobs.archives_dir(uid)
+		_archive_folder.text = "Downloaded to: %s" % folder
+		_archive_folder.set_meta("folder", folder)
 	if not state in Jobs.ACTIVE:
 		var kept: int = gallery.jobs.downloads_size(uid)
 		_delete_downloads.visible = kept > 0

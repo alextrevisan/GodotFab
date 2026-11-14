@@ -157,9 +157,18 @@ class FakeImporter extends RefCounted:
 	func import_export(export_dir: String, target_res_dir: String, meta: Dictionary, target_abs := "", consume := false, _progress := Callable()) -> Dictionary:
 		calls.append(["import_export", export_dir, target_res_dir, meta])
 		return {"ok": import_ok, "error": "" if import_ok else "import failed", "scene": target_res_dir + "/Overview.tscn"}
+	## Name of an archive the extraction leaves behind (a .rar no tool could open).
+	var leave_archive := ""
 	func extract_zips(dir: String, _progress := Callable()) -> Dictionary:
 		calls.append(["extract_zips", dir])
-		return {"ok": true, "error": "", "extracted": 1}
+		var archives: Array = []
+		if leave_archive != "":
+			DirAccess.make_dir_recursive_absolute(dir.path_join("source"))
+			var f := FileAccess.open(dir.path_join("source").path_join(leave_archive), FileAccess.WRITE)
+			f.store_string("Rar!")
+			f.close()
+			archives.append(dir.path_join("source").path_join(leave_archive))
+		return {"ok": true, "error": "", "extracted": 1, "archives": archives}
 	## Runs on the jobs' background thread: reports progress and lasts a few
 	## frames, so the main thread sees the report.
 	func import_direct(files_dir: String, target_res_dir: String, meta: Dictionary, _target_abs := "", extras: Array = [], progress := Callable()) -> Dictionary:

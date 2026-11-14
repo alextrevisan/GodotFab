@@ -393,3 +393,93 @@ func test_import_export_consume_moves_binaries() -> void:
 	var kept := GodotImport.import_export(root.path_join("export2_missing"), "res://fab_assets/p", {"uid": "u1"}, target)
 	assert_false(kept.ok)
 	assert_true(FileAccess.file_exists(target.path_join("Pack/Meshes/A.glb")), "a failed import leaves the target alone")
+
+
+# --- Archives Godot can't read (.rar, .7z) -------------------------------------
+
+## A stand-in for unrar/unar: a shell script called as `<script> <archive> <out>`.
+func _fake_extractor(dir: String, body: String) -> Dictionary:
+	DirAccess.make_dir_recursive_absolute(dir)
+	var path := dir.path_join("fake_extractor.sh")
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string("#!/bin/sh\n" + body + "\n")
+	f.close()
+	FileAccess.set_unix_permissions(path, 493)
+	return {"name": "fake", "path": path, "args": ["%a", "%o"]}
+
+
+static func _write_file(path: String, content: String) -> void:
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(content)
+	f.close()
+
+
+func test_extract_reports_archives_it_cannot_extract() -> void:
+	var root := tmp_dir()
+	_make_zip(root.path_join("files/chair.zip"), {"source/Chair.rar": "Rar!", "textures/a.png": "png"})
+	var res := GodotImport.extract_zips(root.path_join("files"), Callable(), [])
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(res.extracted, 1, "the zip only")
+	var rar := root.path_join("files/chair_extracted/source/Chair.rar")
+	assert_eq(res.archives, [rar])
+	assert_true(FileAccess.file_exists(rar), "the archive stays for the user")
+
+
+func test_extract_archive_with_an_extractor() -> void:
+	if OS.get_name() == "Windows":
+		assert_true(true, "shell script extractor: not on Windows")
+		return
+	var root := tmp_dir()
+	_write_file(root.path_join("files/source/Chair.rar"), "Rar!")
+	var tool := _fake_extractor(root, 'mkdir -p "$2/Chair" && echo fbx > "$2/Chair/chair.fbx"')
+	var res := GodotImport.extract_zips(root.path_join("files"), Callable(), [tool])
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(res.extracted, 1)
+	assert_eq(res.archives, [])
+	assert_true(FileAccess.file_exists(root.path_join("files/source/Chair_extracted/Chair/chair.fbx")))
+	assert_false(FileAccess.file_exists(root.path_join("files/source/Chair.rar")), "archive deleted once extracted")
+
+
+func test_extract_archive_tries_the_next_extractor() -> void:
+	if OS.get_name() == "Windows":
+		assert_true(true, "shell script extractor: not on Windows")
+		return
+	var root := tmp_dir()
+	_write_file(root.path_join("files/Chair.rar"), "Rar!")
+	# Like a 7z built without the RAR codec: it runs and fails.
+	var broken := _fake_extractor(root.path_join("a"), 'echo junk > "$2/partial"; exit 2')
+	var res := GodotImport.extract_zips(root.path_join("files"), Callable(), [broken])
+	assert_true(res.ok)
+	assert_eq(res.archives, [root.path_join("files/Chair.rar")])
+	assert_false(DirAccess.dir_exists_absolute(root.path_join("files/Chair_extracted")), "nothing half extracted is left")
+	var working := _fake_extractor(root.path_join("b"), 'echo fbx > "$2/chair.fbx"')
+	res = GodotImport.extract_zips(root.path_join("files"), Callable(), [broken, working])
+	assert_eq(res.archives, [])
+	assert_true(FileAccess.file_exists(root.path_join("files/Chair_extracted/chair.fbx")))
+
+
+func test_available_extractors() -> void:
+	var root := tmp_dir()
+	_write_file(root.path_join("bin/unar"), "")
+	_write_file(root.path_join("bin2/7z"), "")
+	var path_env := root.path_join("missing") + ":" + root.path_join("bin") + ":" + root.path_join("bin2")
+	var found := GodotImport.available_extractors("Linux", path_env)
+	assert_eq(found.map(func(t): return t.name), ["unar", "7z"])
+	assert_eq(found[0].path, root.path_join("bin/unar"))
+	assert_eq(GodotImport.available_extractors("Windows", path_env), [], "Windows: none looked for")
+	assert_eq(GodotImport.available_extractors("Linux", ""), [])
+
+
+func test_archive_warning() -> void:
+	var windows := GodotImport.archive_warning(["Chair.rar"], [], "Windows", "res://fab_assets/chair")
+	assert_contains(windows, "Chair.rar")
+	assert_contains(windows, "can't extract")
+	assert_contains(windows, "Windows")
+	assert_contains(windows, "res://fab_assets/chair")
+	var none := GodotImport.archive_warning(["Chair.rar"], [], "Linux", "res://fab_assets/chair")
+	assert_contains(none, "No extractor was found")
+	assert_contains(none, "unar")
+	var failed := GodotImport.archive_warning(["Chair.rar", "b.7z"], ["7z"], "Linux", "res://fab_assets/chair")
+	assert_contains(failed, "Chair.rar, b.7z")
+	assert_contains(failed, "7z could not extract")

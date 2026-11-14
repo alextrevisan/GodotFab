@@ -27,6 +27,8 @@ const STATE_LABELS := {
 	State.DONE: "Done", State.ERROR: "Failed", State.CANCELLED: "Cancelled",
 }
 const MAX_DOWNLOADS := 2
+## Folder of a job's staging where the archives it couldn't extract are kept.
+const ARCHIVES_DIR := "archives"
 const MAX_CONVERSIONS := 1
 
 ## Services; the tests replace them with fakes.
@@ -333,6 +335,13 @@ func _finish(uid: String) -> void:
 	_set_state(uid, State.DONE)
 	if keep_downloads:
 		_keep_only_chunks(job.staging)
+	elif DirAccess.dir_exists_absolute(job.staging.path_join(ARCHIVES_DIR)):
+		# Only the archives the user has to extract by hand stay.
+		for sub in DirAccess.get_directories_at(job.staging):
+			if sub != ARCHIVES_DIR:
+				_remove_dir(job.staging.path_join(sub))
+		for file in DirAccess.get_files_at(job.staging):
+			DirAccess.remove_absolute(job.staging.path_join(file))
 	else:
 		_remove_dir(job.staging)
 	job_finished.emit(uid, true)
@@ -369,7 +378,7 @@ static func _keep_only_chunks(staging: String) -> void:
 					_remove_dir(path.path_join(inner))
 			for file in DirAccess.get_files_at(path):
 				DirAccess.remove_absolute(path.path_join(file))
-		else:
+		elif sub != ARCHIVES_DIR:
 			_remove_dir(path)
 	for file in dir.get_files():
 		DirAccess.remove_absolute(staging.path_join(file))
@@ -593,6 +602,9 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 		_fail(uid, "This asset has no %s files" % job.format)
 		return
 	_set_state(uid, State.EXTRACTING)
+	_remove_dir(job.staging.path_join(ARCHIVES_DIR))
+	# The .rar / .7z files nothing here could extract.
+	var archives: Array = []
 	for files_dir in files_dirs + extra_dirs:
 		var extracted: Dictionary = await _in_background(uid, func(report: Callable) -> Dictionary:
 			return importer.extract_zips(files_dir, report))
@@ -601,6 +613,7 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 		if not extracted.ok:
 			_fail(uid, extracted.error)
 			return
+		archives.append_array(extracted.get("archives", []))
 	_set_state(uid, State.IMPORTING)
 	var target := _target_res_dir(job)
 	job.target = target
@@ -609,10 +622,56 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 		return importer.import_direct(files_dirs[0], target, meta, "", extra_dirs, report))
 	if job.cancelled:
 		return
+	if not archives.is_empty():
+		_keep_archives(job, archives, target)
 	if not imported.ok:
-		_fail(uid, imported.error)
+		_fail(uid, imported.error + (" " + job.warning if job.warning != "" else ""))
 		return
 	job.scene = imported.scene
+
+
+## Moves the archives the job couldn't extract to `<staging>/archives`, where
+## they outlive the cleanup, and sets the job's warning: the user extracts
+## them by hand.
+func _keep_archives(job: Dictionary, archives: Array, target: String) -> void:
+	var dir: String = job.staging.path_join(ARCHIVES_DIR)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var names: Array = []
+	for archive in archives:
+		var name: String = str(archive).get_file()
+		var n := 2
+		while FileAccess.file_exists(dir.path_join(name)):
+			name = "%s_%d.%s" % [str(archive).get_file().get_basename(), n, str(archive).get_extension()]
+			n += 1
+		if DirAccess.rename_absolute(str(archive), dir.path_join(name)) == OK:
+			names.append(name)
+	if names.is_empty():
+		return
+	job.warning = archive_warning(names, target)
+	Log.warning("%s: %s Download folder: %s" % [job.title, job.warning, dir])
+
+
+## The warning about [param names], archives left unextracted, for this system.
+static func archive_warning(names: Array, target: String) -> String:
+	var tools: Array = GodotImport.available_extractors().map(func(tool: Dictionary) -> String: return tool.name)
+	return GodotImport.archive_warning(names, tools, OS.get_name(), target)
+
+
+## Folder holding the archives of [param uid] that couldn't be extracted.
+func archives_dir(uid: String) -> String:
+	return staging_root.path_join(uid).path_join(ARCHIVES_DIR)
+
+
+## File names of the archives (.rar, .7z) the download of [param uid] left
+## unextracted; they stay in `archives_dir(uid)` until the downloads are deleted.
+func unextracted_archives(uid: String) -> Array:
+	var names: Array = []
+	if uid.is_empty() or not DirAccess.dir_exists_absolute(archives_dir(uid)):
+		return names
+	var files := DirAccess.get_files_at(archives_dir(uid))
+	files.sort()
+	names.assign(files)
+	return names
 
 
 ## Runs [param work] on a background thread so the editor stays responsive
@@ -691,7 +750,7 @@ func _new_job(uid: String, listing: Dictionary, format: String, scene_pref: Stri
 		"uid": uid, "title": str(listing.get("title", uid)), "listing": listing, "format": format,
 		"scene_pref": scene_pref, "engine_version": engine_version, "state": State.QUEUED, "progress": 0.0, "message": "", "error": "",
 		"log_tail": "", "scene": "", "maps": [], "content_folders": [], "target": "", "started_at": Time.get_unix_time_from_system(),
-		"cancelled": false, "staging": staging_root.path_join(uid), "needs_web": false, "installed": false,
+		"cancelled": false, "staging": staging_root.path_join(uid), "needs_web": false, "installed": false, "warning": "",
 	}
 	return _jobs[uid]
 

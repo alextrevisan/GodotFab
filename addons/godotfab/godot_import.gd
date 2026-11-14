@@ -16,6 +16,18 @@ const MODEL_EXTENSIONS := ["glb", "gltf", "bin", "fbx", "obj", "mtl"]
 const TEXTURE_EXTENSIONS := ["png", "jpg", "jpeg", "tga", "exr", "webp", "tif", "tiff", "bmp", "hdr"]
 ## Scene candidates for the direct path, in order of preference.
 const SCENE_EXTENSIONS := ["glb", "gltf", "fbx"]
+## Archives Godot can't read; an installed extractor opens them, see `extract_zips`.
+const ARCHIVE_EXTENSIONS := ["rar", "7z"]
+## Command line extractors looked for on PATH (not on Windows), best first.
+## In `args`, %a is the archive and %o the output folder.
+const EXTRACTORS := [
+	{"name": "unar", "args": ["-quiet", "-force-overwrite", "-no-directory", "-output-directory", "%o", "%a"]},
+	{"name": "unrar", "args": ["x", "-y", "-inul", "%a", "%o/"]},
+	{"name": "bsdtar", "args": ["-xf", "%a", "-C", "%o"]},
+	{"name": "7z", "args": ["x", "-y", "-o%o", "%a"]},
+	{"name": "7zz", "args": ["x", "-y", "-o%o", "%a"]},
+	{"name": "7za", "args": ["x", "-y", "-o%o", "%a"]},
+]
 
 
 # --- Names and paths -----------------------------------------------------------
@@ -297,32 +309,119 @@ static func _strip_import_cache_lines(text: String) -> String:
 ## `<name>_extracted/` folder next to it and deletes the zip. Entries whose path
 ## would escape that folder abort the extraction of that zip.
 ## [param progress] is called as (done, total, label) per entry.
-static func extract_zips(dir: String, progress := Callable()) -> Dictionary:
+##
+## Godot reads no `.rar` or `.7z` (`ARCHIVE_EXTENSIONS`): those are handed to
+## the [param extractors] (`available_extractors()` when null), extracted the
+## same way when one of them manages it. The ones nothing could extract stay
+## where they are and come back in `archives` (absolute paths); that is not an
+## error, the caller warns the user about them.
+static func extract_zips(dir: String, progress := Callable(), extractors = null) -> Dictionary:
+	var tools: Array = available_extractors() if extractors == null else extractors
 	var extracted := 0
+	var left: Array = []
 	while true:
 		var zips := _find_zips(dir.rstrip("/"))
-		if zips.is_empty():
+		var archives := _find_zips(dir.rstrip("/"), ARCHIVE_EXTENSIONS).filter(func(path: String) -> bool: return not path in left)
+		if zips.is_empty() and archives.is_empty():
 			break
 		for zip_path in zips:
 			var err := _extract_zip(zip_path, progress)
 			if err != "":
-				return {"ok": false, "error": err, "extracted": extracted}
+				return {"ok": false, "error": err, "extracted": extracted, "archives": left}
 			extracted += 1
-	return {"ok": true, "error": "", "extracted": extracted}
+		for archive in archives:
+			_report(progress, 0, 0, "Extracting %s" % archive.get_file())
+			if _extract_archive(archive, tools):
+				extracted += 1
+			else:
+				left.append(archive)
+	if not left.is_empty():
+		Log.warning("Could not extract %s (extractors found: %s)" % [", ".join(PackedStringArray(left)),
+			", ".join(PackedStringArray(tools.map(func(tool: Dictionary) -> String: return tool.name))) if not tools.is_empty() else "none"])
+	return {"ok": true, "error": "", "extracted": extracted, "archives": left}
 
 
-static func _find_zips(dir: String) -> Array[String]:
+static func _find_zips(dir: String, extensions: Array = ["zip"]) -> Array[String]:
 	var found: Array[String] = []
 	var d := DirAccess.open(dir)
 	if d == null:
 		return found
 	d.include_hidden = true
 	for file in d.get_files():
-		if file.get_extension().to_lower() == "zip":
+		if file.get_extension().to_lower() in extensions:
 			found.append(dir.path_join(file))
 	for sub in d.get_directories():
-		found.append_array(_find_zips(dir.path_join(sub)))
+		found.append_array(_find_zips(dir.path_join(sub), extensions))
 	return found
+
+
+## The archive extractors installed on this machine, in order of preference:
+## {name, path, args} of each `EXTRACTORS` entry found on PATH. None on
+## Windows: the addon doesn't extract these archives there.
+static func available_extractors(os_name := OS.get_name(), path_env := OS.get_environment("PATH")) -> Array:
+	var found: Array = []
+	if os_name == "Windows":
+		return found
+	for tool in EXTRACTORS:
+		for dir in path_env.split(":", false):
+			var path := dir.path_join(tool.name)
+			if FileAccess.file_exists(path):
+				found.append({"name": tool.name, "path": path, "args": tool.args})
+				break
+	return found
+
+
+## Extracts [param archive] into `<name>_extracted/` next to it with the first
+## of [param tools] that manages it, then deletes the archive. A tool that
+## fails (a 7z built without the RAR codec, say) leaves nothing behind.
+static func _extract_archive(archive: String, tools: Array) -> bool:
+	var out_dir := archive.get_basename() + "_extracted"
+	for tool in tools:
+		if DirAccess.make_dir_recursive_absolute(out_dir) != OK:
+			return false
+		var args := PackedStringArray()
+		for arg in tool.args:
+			args.append(str(arg).replace("%a", archive).replace("%o", out_dir))
+		var output: Array = []
+		var code := OS.execute(str(tool.path), args, output, true)
+		_remove_links(out_dir)
+		if code == 0 and not (DirAccess.get_files_at(out_dir).is_empty() and DirAccess.get_directories_at(out_dir).is_empty()):
+			DirAccess.remove_absolute(archive)
+			Log.verbose("Extracted %s with %s" % [archive.get_file(), tool.name])
+			return true
+		Log.verbose("%s could not extract %s (exit %d): %s" % [tool.name, archive.get_file(), code, "".join(PackedStringArray(output)).strip_edges().right(300)])
+		_remove_dir(out_dir)
+	return false
+
+
+## Deletes the symbolic links under [param dir]: an archive must not point the
+## import at files outside its own folder.
+static func _remove_links(dir: String) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	d.include_hidden = true
+	for file in d.get_files():
+		if d.is_link(dir.path_join(file)):
+			DirAccess.remove_absolute(dir.path_join(file))
+	for sub in d.get_directories():
+		if d.is_link(dir.path_join(sub)):
+			DirAccess.remove_absolute(dir.path_join(sub))
+		else:
+			_remove_links(dir.path_join(sub))
+
+
+## What to tell the user about the archives [param names] left unextracted:
+## [param tools] are the extractors that were found (and failed).
+static func archive_warning(names: Array, tools: Array, os_name: String, target_res_dir: String) -> String:
+	var files := ", ".join(PackedStringArray(names))
+	var todo := "Extract it yourself and copy the model into %s." % target_res_dir
+	if os_name == "Windows":
+		return "The model is probably inside %s, and GodotFab can't extract .rar or .7z archives on Windows. %s" % [files, todo]
+	if tools.is_empty():
+		return "The model is probably inside %s. No extractor was found on this system: install unar, unrar or bsdtar and download again, or extract it yourself and copy the model into %s." % [files, target_res_dir]
+	return "The model is probably inside %s, and %s could not extract it (it may lack RAR support). Install unar, unrar or bsdtar and download again, or extract it yourself and copy the model into %s." % [
+		files, ", ".join(PackedStringArray(tools)), target_res_dir]
 
 
 static func _extract_zip(zip_path: String, progress := Callable()) -> String:
