@@ -26,10 +26,14 @@ const SLOT_KEYWORDS := {
 	"normal": ["normal"],
 	"orm": ["occlusionroughnessmetallic", "orm"],
 	"opacity": ["opacity", "alpha"],
+	"roughness": ["roughness"],
+	"metallic": ["metallic", "metalness"],
+	"ao": ["ambientocclusion"],
 }
-## Slots Godot's FBX importer drops even when the file is found: ORM maps
-## come as ShininessExponent / ReflectionFactor, opacity as TransparencyFactor.
-const GODOT_IGNORED_SLOTS := ["orm", "opacity"]
+## Slots Godot's FBX importer drops even when the file is found: ORM and
+## separate roughness / metallic / AO maps come as ShininessExponent,
+## SpecularColor, ReflectionFactor or AmbientColor, opacity as TransparencyFactor.
+const GODOT_IGNORED_SLOTS := ["orm", "opacity", "roughness", "metallic", "ao"]
 ## Slots the FBX format has no property for, looked up next to the base
 ## color by name (see sibling_entry), with the words that name them.
 const SIBLING_WORDS := {
@@ -39,7 +43,8 @@ const SIBLING_WORDS := {
 ## Name parts that say nothing about which material a texture belongs to.
 ## Slot words are left out too: every base color texture shares "base" and "color".
 const GENERIC_TOKENS := ["tex", "texture", "textures", "map", "light", "dark", "png", "jpg", "low", "high", "final",
-	"base", "color", "colour", "basecolor", "albedo", "diffuse", "normal", "opacity", "alpha", "orm", "occlusion", "roughness", "metallic"]
+	"base", "color", "colour", "basecolor", "albedo", "diffuse", "normal", "opacity", "alpha", "orm", "occlusion", "roughness", "metallic",
+	"ao", "rough", "metalness", "metal"]
 
 
 # MARK: plan
@@ -135,14 +140,19 @@ static func _albedo_location(fbx_dir: String, ref: Dictionary, fix: Dictionary) 
 
 ## Slots completed from the names of the textures, for the maps an FBX often
 ## leaves out (only the normal map referenced, say): base color, normal, ORM.
-const NAMED_SLOTS := ["albedo", "normal", "orm"]
+const NAMED_SLOTS := ["albedo", "normal", "orm", "roughness", "metallic", "ao"]
 ## Last name part(s) of a texture -> its slot ("T_Rock_01_A", "Crate_Base_Color").
 const SLOT_SUFFIXES := {
 	"a": "albedo", "bc": "albedo", "basecolor": "albedo", "basecolour": "albedo", "albedo": "albedo",
 	"diffuse": "albedo", "diff": "albedo", "d": "albedo", "col": "albedo", "color": "albedo", "colour": "albedo",
 	"n": "normal", "nrm": "normal", "nor": "normal", "norm": "normal", "normal": "normal", "normalgl": "normal", "normaldx": "normal",
 	"orm": "orm", "arm": "orm", "occlusionroughnessmetallic": "orm",
+	"roughness": "roughness", "rough": "roughness",
+	"metallic": "metallic", "metalness": "metallic", "metal": "metallic",
+	"ao": "ao", "ambientocclusion": "ao", "occlusion": "ao",
 }
+## Last name part of a height map: an FBX "Bump" texture named so is not a normal map.
+const HEIGHT_SUFFIXES := ["height", "bump", "disp", "displacement"]
 ## Name prefixes that say what an asset is, not which one (T_, SM_, M_...).
 const ASSET_PREFIXES := ["t", "tx", "tex", "sm", "sk", "s", "m", "mi", "mat"]
 
@@ -262,6 +272,9 @@ static func slot_of(property: String, file_names: String) -> String:
 	var names := file_names.to_lower()
 	if p in ["diffusecolor", "maya|basecolor", "base_color", "maya|base_color", "diffusefactor"]:
 		return "albedo"
+	var basename := file_names.strip_edges().get_file().get_basename()
+	if p == "bump" and basename.to_lower().replace("-", "_").get_slice("_", basename.count("_") + basename.count("-")) in HEIGHT_SUFFIXES:
+		return ""
 	if p in ["normalmap", "bump", "maya|normalcamera", "normal_camera"]:
 		return "normal"
 	if p in ["transparencyfactor", "transparentcolor", "opacity", "maya|opacity"]:
@@ -269,6 +282,11 @@ static func slot_of(property: String, file_names: String) -> String:
 	for keyword in SLOT_KEYWORDS.orm:
 		if names.contains(keyword):
 			return "orm"
+	# Separate PBR maps: exporters hang them on whatever property is free
+	# (AmbientColor, SpecularColor, ShininessExponent...), so the name decides.
+	var named := texture_slot_suffix(basename)
+	if not named.is_empty() and named[1] in ["roughness", "metallic", "ao"]:
+		return named[1]
 	return ""
 
 
@@ -296,7 +314,8 @@ static func _resolve(fbx_dir: String, ref: Dictionary, material: String, slot: S
 		return {"udim": tiles} if not tiles.is_empty() else {}
 	# Where Godot's FBX importer looks: the relative path, then the name next to the FBX.
 	# It never applies ORM or opacity textures, even when it finds them.
-	var keep := every or slot in GODOT_IGNORED_SLOTS
+	# Nor a normal map hung on "Bump", which it takes for a height map.
+	var keep := every or slot in GODOT_IGNORED_SLOTS or (slot == "normal" and str(ref.get("property", "")).to_lower() == "bump")
 	if not relative.is_empty() and FileAccess.file_exists(fbx_dir.path_join(relative)):
 		return {"file": fbx_dir.path_join(relative).simplify_path()} if keep else {}
 	if FileAccess.file_exists(fbx_dir.path_join(name)):
@@ -562,6 +581,24 @@ static func fixed_material(material: Material, fixes: Dictionary, flip_normal_y 
 			"orm":
 				if out.roughness_texture == null and out.metallic_texture == null:
 					_set_orm(out, texture)
+					touched = true
+			"roughness":
+				if out.roughness_texture == null:
+					out.roughness = 1.0
+					out.roughness_texture = texture
+					out.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GRAYSCALE
+					touched = true
+			"metallic":
+				if out.metallic_texture == null:
+					out.metallic = 1.0
+					out.metallic_texture = texture
+					out.metallic_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GRAYSCALE
+					touched = true
+			"ao":
+				if out.ao_texture == null:
+					out.ao_enabled = true
+					out.ao_texture = texture
+					out.ao_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GRAYSCALE
 					touched = true
 	if not touched:
 		return material

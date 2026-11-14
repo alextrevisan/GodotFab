@@ -147,7 +147,54 @@ func test_slot_of() -> void:
 	assert_eq(FbxTextureFix.slot_of("NormalMap", ""), "normal")
 	assert_eq(FbxTextureFix.slot_of("TransparencyFactor", ""), "opacity")
 	assert_eq(FbxTextureFix.slot_of("ReflectionFactor", "Body_OcclusionRoughnessMetallic.png"), "orm")
-	assert_eq(FbxTextureFix.slot_of("ReflectionFactor", "Body_Metal.png"), "")
+	assert_eq(FbxTextureFix.slot_of("ReflectionFactor", "Body_Cavity.png"), "")
+	# Separate PBR maps hang on whatever FBX property the exporter picked: the name decides.
+	assert_eq(FbxTextureFix.slot_of("AmbientColor", "textures/chair_AO.png C:/x/chair_AO.png"), "ao")
+	assert_eq(FbxTextureFix.slot_of("SpecularColor", "textures/chair_Metallic.png"), "metallic")
+	assert_eq(FbxTextureFix.slot_of("ShininessExponent", "textures/chair_Roughness.png"), "roughness")
+	assert_eq(FbxTextureFix.slot_of("Bump", "textures/chair_Normal.png"), "normal")
+	assert_eq(FbxTextureFix.slot_of("Bump", "textures/chair_Height.png"), "", "a height map is not a normal map")
+	# A known property wins over the name: the base color's alpha used as opacity.
+	assert_eq(FbxTextureFix.slot_of("TransparencyFactor", "Hair_BaseColor.png"), "opacity")
+
+
+func test_plan_separate_pbr_maps() -> void:
+	# Fab's "Chair" (Max3d): five maps, all next to the FBX where Godot finds
+	# them, but it only applies the base color.
+	var root := tmp_dir()
+	write_file(root.path_join(".godotfab.json"), "{}")
+	for map in ["Albedo", "AO", "Metallic", "Normal", "Roughness"]:
+		write_file(root.path_join("textures/chair_%s.png" % map), "png")
+	var refs := []
+	for pair in [["AmbientColor", "AO"], ["DiffuseColor", "Albedo"], ["Bump", "Normal"], ["SpecularColor", "Metallic"], ["ShininessExponent", "Roughness"]]:
+		refs.append({"property": pair[0], "relative": "textures/chair_%s.png" % pair[1], "file": "C:/Users/user/Desktop/Chair/textures/chair_%s.png" % pair[1]})
+	var fixes := FbxTextureFix.plan_from_refs(root.path_join("chair.fbx"), {"chair": refs})
+	assert_eq(fixes.get("chair"), {
+		"ao": {"file": root.path_join("textures/chair_AO.png")},
+		"normal": {"file": root.path_join("textures/chair_Normal.png")},
+		"metallic": {"file": root.path_join("textures/chair_Metallic.png")},
+		"roughness": {"file": root.path_join("textures/chair_Roughness.png")},
+	})
+
+
+func test_apply_separate_pbr_maps() -> void:
+	var chair := StandardMaterial3D.new()
+	chair.resource_name = "chair"
+	chair.metallic = 0.0
+	var instance := _material_mesh(chair)
+	var tex := ProjectSettings.globalize_path(PROJECT_TEXTURE)
+	var fixes := {"chair": {"ao": {"file": tex}, "normal": {"file": tex}, "metallic": {"file": tex}, "roughness": {"file": tex}}}
+	assert_eq(FbxTextureFix.apply(instance, fixes), 1)
+	var fixed: StandardMaterial3D = instance.mesh.surface_get_material(0)
+	assert_not_null(fixed.normal_texture)
+	assert_true(fixed.normal_enabled)
+	assert_not_null(fixed.roughness_texture)
+	assert_eq(fixed.roughness, 1.0)
+	assert_not_null(fixed.metallic_texture)
+	assert_eq(fixed.metallic, 1.0)
+	assert_true(fixed.ao_enabled)
+	assert_not_null(fixed.ao_texture)
+	instance.free()
 
 
 func _pack() -> String:
