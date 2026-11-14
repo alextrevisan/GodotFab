@@ -44,7 +44,10 @@ func _post_process(scene: Node) -> void:
 	var prepared := FbxTextureFix.prepare_materials(scene, options, is_fbx)
 	var fixes := {}
 	if is_fbx and get_option_value(OPTION):
-		fixes = FbxTextureFix.plan(ProjectSettings.globalize_path(source))
+		var names := []
+		for material in FbxTextureFix.materials_of(scene):
+			names.append(material.resource_name)
+		fixes = FbxTextureFix.plan(ProjectSettings.globalize_path(source), names)
 	var changed := FbxTextureFix.apply(scene, fixes, options)
 	if prepared + changed > 0:
 		Log.info("Scene import: %s, %d material(s) adjusted" % [source.get_file(), max(prepared, changed)])

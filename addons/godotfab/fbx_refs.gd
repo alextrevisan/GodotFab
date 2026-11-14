@@ -1,6 +1,6 @@
 @tool
 extends RefCounted
-## Reads which texture files each material of a binary FBX uses, straight
+## Reads which texture files each material of an FBX (binary or ASCII) uses, straight
 ## from the file (Godot's FBX importer drops the references it can't load).
 ## Only the Objects (Material, Texture) and Connections sections are read;
 ## array properties (geometry) are skipped by length, never decompressed.
@@ -20,7 +20,10 @@ static func parse(path: String) -> Dictionary:
 
 static func parse_bytes(bytes: PackedByteArray) -> Dictionary:
 	if bytes.size() < 27 or bytes.slice(0, 20).get_string_from_ascii() != MAGIC:
-		return _fail("Not a binary FBX")
+		var head := bytes.slice(0, 512).get_string_from_utf8()
+		if head.contains("FBX") and (head.contains("Objects:") or head.begins_with(";")):
+			return _parse_ascii(bytes.get_string_from_utf8())
+		return _fail("Not an FBX")
 	var version := bytes.decode_u32(23)
 	var wide := version >= 7500
 	var objects := {}
@@ -38,6 +41,12 @@ static func parse_bytes(bytes: PackedByteArray) -> Dictionary:
 				if props.size() >= 3:
 					connections.append(props)
 		pos = node.end
+	return _link(objects, connections)
+
+
+## {ok, error, materials} from the objects {id: {type, name, relative?, file?}}
+## and the connections [kind, child id, parent id, property?].
+static func _link(objects: Dictionary, connections: Array) -> Dictionary:
 	var materials := {}
 	for c in connections:
 		if str(c[0]) != "OP" or not objects.has(c[1]) or not objects.has(c[2]):
@@ -51,6 +60,72 @@ static func parse_bytes(bytes: PackedByteArray) -> Dictionary:
 		materials[material.name].append({"property": str(c[3]) if c.size() > 3 else "",
 			"relative": texture.get("relative", ""), "file": texture.get("file", "")})
 	return {"ok": true, "error": "", "materials": materials}
+
+
+## The ASCII FBX form: one node per line ("Name: props {"), so the Material
+## and Texture blocks of Objects and the "C:" lines of Connections are read
+## line by line; geometry arrays are skipped by brace depth.
+static func _parse_ascii(text: String) -> Dictionary:
+	var objects := {}
+	var connections: Array = []
+	var section := ""
+	var depth := 0
+	var current := {}
+	var current_id := 0
+	for raw in text.split("\n"):
+		var line := raw.strip_edges()
+		if line.is_empty() or line.begins_with(";"):
+			continue
+		var key := line.get_slice(":", 0).strip_edges()
+		var value := line.substr(line.find(":") + 1).strip_edges() if line.contains(":") else ""
+		if depth == 0 and line.ends_with("{"):
+			section = key
+		elif depth == 1 and section == "Objects" and line.ends_with("{") and (key == "Material" or key == "Texture"):
+			var props := _ascii_props(value.trim_suffix("{"))
+			if props.size() >= 2:
+				var name := str(props[1])
+				current_id = int(props[0])
+				current = {"type": key, "name": name.substr(name.find("::") + 2) if name.contains("::") else name}
+				objects[current_id] = current
+		elif depth == 2 and not current.is_empty() and (key == "RelativeFilename" or key == "FileName"):
+			var props := _ascii_props(value)
+			if props.size() > 0:
+				current["relative" if key == "RelativeFilename" else "file"] = str(props[0]).replace("\\", "/")
+		elif depth == 1 and section == "Connections" and key == "C":
+			var props := _ascii_props(value)
+			if props.size() >= 3:
+				connections.append(props)
+		depth += line.count("{") - line.count("}")
+		if depth <= 1:
+			current = {}
+		if depth == 0:
+			section = ""
+	return _link(objects, connections)
+
+
+## The comma-separated values of an ASCII FBX line: quoted strings, integers.
+static func _ascii_props(text: String) -> Array:
+	var out: Array = []
+	var i := 0
+	while i < text.length():
+		var c := text[i]
+		if c == "\"":
+			var end := text.find("\"", i + 1)
+			if end < 0:
+				end = text.length()
+			out.append(text.substr(i + 1, end - i - 1))
+			i = text.find(",", end)
+			if i < 0:
+				break
+		elif c != " " and c != ",":
+			var end := text.find(",", i)
+			if end < 0:
+				end = text.length()
+			var token := text.substr(i, end - i).strip_edges()
+			out.append(int(token) if token.is_valid_int() else token)
+			i = end
+		i += 1
+	return out
 
 
 static func _fail(message: String) -> Dictionary:

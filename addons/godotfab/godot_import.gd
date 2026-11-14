@@ -6,6 +6,7 @@ extends RefCounted
 
 const Log = preload("res://addons/godotfab/log.gd")
 const ExportFixes = preload("res://addons/godotfab/export_fixes.gd")
+const FbxTextureFix = preload("res://addons/godotfab/fbx_texture_fix.gd")
 
 const MANIFEST_FILE := ".godotfab.json"
 const SLUG_MAX := 48
@@ -389,7 +390,7 @@ static func import_direct(files_dir: String, target_res_dir: String, meta: Dicti
 	if not DirAccess.dir_exists_absolute(src):
 		return _fail("Files folder not found: %s" % src)
 	var target := _target_abs_of(target_res_dir, target_abs)
-	var root := _model_root(src)
+	var root := _content_root(src)
 	var count := [0]
 	var on_file := func(file: String) -> void:
 		count[0] += 1
@@ -405,6 +406,7 @@ static func import_direct(files_dir: String, target_res_dir: String, meta: Dicti
 				return _fail(err)
 		if copied.is_empty():
 			return _fail("No model or texture files found in %s" % src)
+		_preset_textures(target)
 		var scene := ""
 		for ext in SCENE_EXTENSIONS:
 			for rel in copied:
@@ -417,23 +419,69 @@ static func import_direct(files_dir: String, target_res_dir: String, meta: Dicti
 	)
 
 
-## The shallowest directory (breadth-first, sorted) that directly contains a
-## model file; `src` itself when there is none.
-static func _model_root(src: String) -> String:
-	var queue: Array[String] = [src]
-	while not queue.is_empty():
-		var dir: String = queue.pop_front()
-		var d := DirAccess.open(dir)
-		if d == null:
+## Writes a 3D import preset (VRAM compressed, mipmaps, no 3D/normal/
+## roughness detection) for each texture under `dir` without a .import. Godot
+## otherwise imports a texture for 2D, sees it used in 3D during the scene's
+## import and reimports it in a second "reimport" task nested in the first,
+## which fails ("Task 'reimport' already exists"). Float images (EXR, HDR)
+## keep Godot's defaults.
+static func _preset_textures(dir: String) -> void:
+	for file in DirAccess.get_files_at(dir):
+		var ext := file.get_extension().to_lower()
+		if not ext in TEXTURE_EXTENSIONS or ext in ["exr", "hdr"]:
 			continue
-		for file in _sorted_files(dir):
-			if file.get_extension().to_lower() in MODEL_EXTENSIONS:
-				return dir
-		var subs := d.get_directories()
-		subs.sort()
-		for sub in subs:
-			queue.append(dir.path_join(sub))
-	return src
+		var path := dir.path_join(file)
+		if FileAccess.file_exists(path + ".import"):
+			continue
+		var f := FileAccess.open(path + ".import", FileAccess.WRITE)
+		if f:
+			f.store_string(texture_import_preset(file))
+			f.close()
+	for sub in DirAccess.get_directories_at(dir):
+		_preset_textures(dir.path_join(sub))
+
+
+## The .import text of a texture used by a 3D model; a name ending in a
+## normal map suffix (_N, _Normal) gets normal map compression.
+static func texture_import_preset(file: String) -> String:
+	var slot := FbxTextureFix.texture_slot_suffix(file.get_basename())
+	var is_normal: bool = not slot.is_empty() and slot[1] == "normal"
+	return "\n".join([
+		"[remap]", "", "importer=\"texture\"", "type=\"CompressedTexture2D\"", "",
+		"[params]", "",
+		"compress/mode=2",
+		"compress/normal_map=%d" % (1 if is_normal else 2),
+		"mipmaps/generate=true",
+		"roughness/mode=1",
+		"detect_3d/compress_to=0",
+		"",
+	])
+
+
+## The deepest folder holding every model and texture under `src`: wrapper
+## folders (`<zip>_extracted/<Pack>/`) are dropped, while a pack laid out as
+## `Rock_01/Meshes/*.fbx` + `Rock_01/Textures/*.tga` keeps all of it. `src`
+## itself when there is no asset.
+static func _content_root(src: String) -> String:
+	var dirs: Array[String] = []
+	_asset_dirs(src, dirs)
+	if dirs.is_empty():
+		return src
+	var common := dirs[0]
+	for dir in dirs:
+		while not (dir + "/").begins_with(common + "/"):
+			common = common.get_base_dir()
+	return common if (common + "/").begins_with(src + "/") else src
+
+
+static func _asset_dirs(dir: String, out: Array[String]) -> void:
+	for file in DirAccess.get_files_at(dir):
+		var ext := file.get_extension().to_lower()
+		if ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS:
+			out.append(dir)
+			break
+	for sub in DirAccess.get_directories_at(dir):
+		_asset_dirs(dir.path_join(sub), out)
 
 
 ## Copies the assets of an additional-files folder into [param dst]: an
@@ -531,16 +579,27 @@ static func _finish(target: String, meta: Dictionary, scene: String) -> Dictiona
 	return {"ok": true, "error": "", "scene": scene}
 
 
-## Asks the editor to scan for the new files; deferred to the main thread
-## when the import runs on a background thread.
+## Asks the editor to scan for the new files, once it is idle: a scan
+## started while it imports (a deferred call runs inside its progress
+## dialog) nests a second "reimport" task and fails ("Task 'reimport'
+## already exists"). Requests made meanwhile share that one scan.
+static var _scan_pending := false
+
+
 static func _rescan() -> void:
-	if not Engine.is_editor_hint():
+	if not Engine.is_editor_hint() or _scan_pending:
 		return
+	_scan_pending = true
+	_scan_when_idle.call_deferred()
+
+
+static func _scan_when_idle() -> void:
 	var fs := EditorInterface.get_resource_filesystem()
-	if OS.get_thread_caller_id() == OS.get_main_thread_id():
-		fs.scan()
-	else:
-		fs.scan.call_deferred()
+	if fs.is_scanning() or fs.is_importing():
+		(Engine.get_main_loop() as SceneTree).create_timer(0.5).timeout.connect(_scan_when_idle, CONNECT_ONE_SHOT)
+		return
+	_scan_pending = false
+	fs.scan()
 
 
 static func _report(progress: Callable, done: int, total: int, label: String) -> void:

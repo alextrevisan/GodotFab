@@ -105,8 +105,41 @@ func test_refs_read_material_textures() -> void:
 	assert_eq(refs.materials["Jacket1"][0], {"property": "DiffuseColor", "relative": "Textures/Jacket_BaseColor.jpg", "file": "G:/x/Jacket_BaseColor.jpg"})
 
 
-func test_refs_reject_non_binary() -> void:
-	assert_false(FbxRefs.parse_bytes("; FBX 7.4.0 project file".to_utf8_buffer()).ok)
+func test_refs_reject_non_fbx() -> void:
+	assert_false(FbxRefs.parse_bytes("glTF binary, not an FBX".to_utf8_buffer()).ok)
+
+
+func test_refs_read_ascii_fbx() -> void:
+	# "Mobile Trees Model" ships an ASCII FBX (7.7) exported on Windows.
+	var text := """; FBX 7.7.0 project file
+; ----------------------------------------------------
+
+Objects:  {
+	Geometry: 1, "Geometry::Tree", "Mesh" {
+		Vertices: *3 {
+			a: 0,1,2
+		}
+	}
+	Material: 2424157339936, "Material::Mobile28_Trunk", "" {
+		ShadingModel: "phong"
+	}
+	Texture: 2420458856224, "Texture::DiffuseColor_Texture", "" {
+		Media: "Video::DiffuseColor_Texture"
+		FileName: "E:\\APK\\Exported\\356.png"
+		RelativeFilename: "0\\Tree_28\\Exported\\356.png"
+	}
+}
+
+Connections:  {
+	;Texture::DiffuseColor_Texture, Material::Mobile28_Trunk
+	C: "OP",2420458856224,2424157339936, "DiffuseColor"
+	C: "OO",2424157339936,1
+}
+"""
+	var refs := FbxRefs.parse_bytes(text.to_utf8_buffer())
+	assert_true(refs.ok, refs.error)
+	assert_eq(refs.materials, {"Mobile28_Trunk": [{"property": "DiffuseColor",
+		"relative": "0/Tree_28/Exported/356.png", "file": "E:/APK/Exported/356.png"}]})
 
 
 func test_slot_of() -> void:
@@ -274,6 +307,18 @@ func _material_mesh(material: Material) -> MeshInstance3D:
 	return instance
 
 
+func test_apply_albedo_with_alpha_cuts_out() -> void:
+	# A leaf atlas found by the fix: its transparent parts must not render black.
+	var leaf := StandardMaterial3D.new()
+	leaf.resource_name = "Leaf"
+	var instance := _material_mesh(leaf)
+	var fixes := {"Leaf": {"albedo": {"file": ProjectSettings.globalize_path(PROJECT_TEXTURE)}}}
+	assert_eq(FbxTextureFix.apply(instance, fixes), 1)
+	var fixed: StandardMaterial3D = instance.mesh.surface_get_material(0)
+	assert_eq(fixed.transparency, BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR)
+	instance.free()
+
+
 func test_apply_flip_keeps_existing_textures() -> void:
 	var tex := load(PROJECT_TEXTURE)
 	var skin := StandardMaterial3D.new()
@@ -344,8 +389,79 @@ func test_plan_adds_sibling_maps_of_the_base_color() -> void:
 	assert_eq(fixes["Head"]["sss"].udim.size(), 3)
 	assert_eq(fixes["Head"]["sss"].udim[1], root.path_join("Textures/Body/Body_SSS.1002.png"))
 	assert_false(fixes["Head"].has("specular"))
-	assert_eq(fixes["Jacket1"], {"specular": {"file": root.path_join("Textures/Jacket/jacket_specular.jpg")}}, "case-insensitive")
+	assert_eq(fixes["Jacket1"], {"specular": {"file": root.path_join("Textures/Jacket/jacket_specular.jpg")},
+		"orm": {"file": root.path_join("Textures/Jacket/Jacket_OcclusionRoughnessMetallic.jpg")}},
+		"specular: case-insensitive; the ORM next to the base color is added too")
 	assert_false(fixes.has("Eye"), "Eye_SpecularColourBrown is not a sibling")
+
+
+func test_plan_completes_slots_from_the_referenced_texture() -> void:
+	# "Free - Warehouse Wooden Pallet": the FBX references only the normal map
+	# (an author's absolute path); the base color and ORM sit next to it.
+	var root := tmp_dir()
+	write_file(root.path_join(".godotfab.json"), "{}")
+	for slot in ["Normal", "BaseColor", "ORM", "Height"]:
+		write_file(root.path_join("Textures/T_Wooden_Pallet_%s.png" % slot), "png")
+	var materials := {"M_Wooden_Pallet": [{"property": "NormalMap",
+		"relative": "C:/Users/a/Desktop/Wooden_Pallet_Blender/Textures/T_Wooden_Pallet_Normal.png",
+		"file": "C:/Users/a/Desktop/Wooden_Pallet_Blender/Textures/T_Wooden_Pallet_Normal.png"}]}
+	var fixes := FbxTextureFix.plan_from_refs(root.path_join("SM_Wooden_Pallet.fbx"), materials)
+	assert_eq(fixes.get("M_Wooden_Pallet"), {
+		"normal": {"file": root.path_join("Textures/T_Wooden_Pallet_Normal.png")},
+		"albedo": {"file": root.path_join("Textures/T_Wooden_Pallet_BaseColor.png")},
+		"orm": {"file": root.path_join("Textures/T_Wooden_Pallet_ORM.png")},
+	})
+
+
+func test_plan_matches_textures_of_a_material_without_references() -> void:
+	# "Environment - Rock Collection 04": the FBX references no texture at all;
+	# T_Rock_01_A/_N/_ORM are matched through the mesh name SM_Rock_01.
+	var root := tmp_dir()
+	write_file(root.path_join(".godotfab.json"), "{}")
+	for n in ["01", "02"]:
+		for slot in ["A", "N", "ORM"]:
+			write_file(root.path_join("Rock_%s/Textures/T_Rock_%s_%s.tga" % [n, n, slot]), "tga")
+	var fbx := root.path_join("Rock_01/Meshes/SM_Rock_01.fbx")
+	var fixes := FbxTextureFix.plan_from_refs(fbx, {}, ["Material"])
+	assert_eq(fixes.get("Material"), {
+		"albedo": {"file": root.path_join("Rock_01/Textures/T_Rock_01_A.tga")},
+		"normal": {"file": root.path_join("Rock_01/Textures/T_Rock_01_N.tga")},
+		"orm": {"file": root.path_join("Rock_01/Textures/T_Rock_01_ORM.tga")},
+	})
+	# No texture named like the mesh or the material: nothing is guessed.
+	assert_false(FbxTextureFix.plan_from_refs(root.path_join("Other/SM_Crate.fbx"), {}, ["M_Crate"]).has("M_Crate"))
+
+
+func test_plan_matches_textures_without_a_slot_word() -> void:
+	# "Mobile Trees Model": the FBX references 356.png / Atlas.png from the
+	# author's disk; the pack ships T_Mobile_Trees_Trunk (no slot word),
+	# T_Mobile_Trees_Trunk_normal and T_Mobile_Trees_Leaf.
+	var root := tmp_dir()
+	write_file(root.path_join(".godotfab.json"), "{}")
+	for name in ["T_Mobile_Trees_Trunk", "T_Mobile_Trees_Trunk_normal", "T_Mobile_Trees_Leaf"]:
+		write_file(root.path_join("Textures/%s.TGA" % name), "tga")
+	var fbx := root.path_join("Model/SM_Mobile_Trees.fbx")
+	var fixes := FbxTextureFix.plan_from_refs(fbx, {
+		"Mobile28_Trunk": [{"property": "DiffuseColor", "relative": "0/Tree_28/Exported/356.png", "file": "E:/APK/356.png"}],
+		"Mobile28_Leaf": [{"property": "DiffuseColor", "relative": "0/Tree_28/Exported/Atlas.png", "file": "E:/APK/Atlas.png"}],
+		"Mobile28_Bark": [{"property": "DiffuseColor", "relative": "Bark.png", "file": ""}],
+	})
+	assert_eq(fixes.get("Mobile28_Trunk"), {
+		"albedo": {"file": root.path_join("Textures/T_Mobile_Trees_Trunk.TGA")},
+		"normal": {"file": root.path_join("Textures/T_Mobile_Trees_Trunk_normal.TGA")},
+	})
+	assert_eq(fixes.get("Mobile28_Leaf"), {"albedo": {"file": root.path_join("Textures/T_Mobile_Trees_Leaf.TGA")}})
+	# Only "mobile" in common: a texture without a slot word needs every word.
+	assert_false(fixes.has("Mobile28_Bark"))
+
+
+func test_texture_slot_suffix() -> void:
+	assert_eq(FbxTextureFix.texture_slot_suffix("T_Rock_01_A"), ["T_Rock_01", "albedo"])
+	assert_eq(FbxTextureFix.texture_slot_suffix("T_Rock_01_N"), ["T_Rock_01", "normal"])
+	assert_eq(FbxTextureFix.texture_slot_suffix("T_Wooden_Pallet_BaseColor"), ["T_Wooden_Pallet", "albedo"])
+	assert_eq(FbxTextureFix.texture_slot_suffix("Crate_Base_Color"), ["Crate", "albedo"])
+	assert_eq(FbxTextureFix.texture_slot_suffix("crate-orm"), ["crate", "orm"])
+	assert_eq(FbxTextureFix.texture_slot_suffix("T_Wooden_Pallet_Height"), [])
 
 
 func test_sss_specular_shader_code() -> void:

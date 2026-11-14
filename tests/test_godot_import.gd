@@ -203,6 +203,49 @@ func test_import_direct_copies_models_and_textures() -> void:
 	assert_eq(meta.get("format"), "gltf")
 
 
+func test_import_direct_keeps_every_model_and_the_textures_next_to_it() -> void:
+	# Fab's "Rock Collection 04" FBX zip: one folder per rock, each with Meshes/ and
+	# Textures/. Only the wrapper folders above them are dropped.
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	for n in ["01", "02"]:
+		write_file(files.path_join("rocks_extracted/Rock_%s/Meshes/SM_Rock_%s.fbx" % [n, n]), "fbx")
+		write_file(files.path_join("rocks_extracted/Rock_%s/Textures/T_Rock_%s_A.tga" % [n, n]), "tga")
+	var target := root.path_join("fab_assets/rocks")
+	var res := GodotImport.import_direct(files, "res://fab_assets/rocks", {}, target)
+	assert_true(res.ok, res.get("error", ""))
+	assert_eq(res.scene, "res://fab_assets/rocks/Rock_01/Meshes/SM_Rock_01.fbx")
+	for n in ["01", "02"]:
+		assert_true(FileAccess.file_exists(target.path_join("Rock_%s/Meshes/SM_Rock_%s.fbx" % [n, n])), "model %s" % n)
+		assert_true(FileAccess.file_exists(target.path_join("Rock_%s/Textures/T_Rock_%s_A.tga" % [n, n])), "textures %s" % n)
+
+
+func test_import_direct_presets_textures_for_3d() -> void:
+	# Without a preset Godot imports each texture for 2D, sees it used in 3D
+	# and reimports it, nested in the scene's import ("Task 'reimport' already exists").
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	write_file(files.path_join("Model/SM_Tree.fbx"), "fbx")
+	for name in ["T_Tree_Leaf.TGA", "T_Tree_Trunk_normal.TGA", "Sky.exr"]:
+		write_file(files.path_join("Textures/" + name), "img")
+	write_file(files.path_join("Textures/T_Tree_Bark.png"), "img")
+	write_file(files.path_join("Textures/T_Tree_Bark.png.import"), "[remap]\nimporter=\"texture\"\n")
+	var target := root.path_join("fab_assets/tree")
+	assert_true(GodotImport.import_direct(files, "res://fab_assets/tree", {}, target).ok)
+	var leaf := ConfigFile.new()
+	assert_eq(leaf.load(target.path_join("Textures/T_Tree_Leaf.TGA.import")), OK)
+	assert_eq(leaf.get_value("remap", "importer"), "texture")
+	assert_eq(leaf.get_value("params", "compress/mode"), 2, "VRAM compressed")
+	assert_eq(leaf.get_value("params", "mipmaps/generate"), true)
+	assert_eq(leaf.get_value("params", "detect_3d/compress_to"), 0)
+	assert_eq(leaf.get_value("params", "compress/normal_map"), 2)
+	assert_eq(leaf.get_value("params", "roughness/mode"), 1)
+	var normal := ConfigFile.new()
+	normal.load(target.path_join("Textures/T_Tree_Trunk_normal.TGA.import"))
+	assert_eq(normal.get_value("params", "compress/normal_map"), 1)
+	assert_false(FileAccess.file_exists(target.path_join("Textures/Sky.exr.import")), "float textures keep Godot's defaults")
+
+
 func test_extract_and_import_direct_report_progress() -> void:
 	var root := tmp_dir()
 	var files := root.path_join("files")
