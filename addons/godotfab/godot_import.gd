@@ -316,28 +316,29 @@ static func _strip_import_cache_lines(text: String) -> String:
 ## where they are and come back in `archives` (absolute paths); that is not an
 ## error, the caller warns the user about them.
 static func extract_zips(dir: String, progress := Callable(), extractors = null) -> Dictionary:
-	var tools: Array = available_extractors() if extractors == null else extractors
 	var extracted := 0
 	var left: Array = []
 	while true:
-		var zips := _find_zips(dir.rstrip("/"))
-		var archives := _find_zips(dir.rstrip("/"), ARCHIVE_EXTENSIONS).filter(func(path: String) -> bool: return not path in left)
-		if zips.is_empty() and archives.is_empty():
+		var found := _find_zips(dir.rstrip("/"), ["zip"] + ARCHIVE_EXTENSIONS).filter(func(path: String) -> bool: return not path in left)
+		if found.is_empty():
 			break
-		for zip_path in zips:
-			var err := _extract_zip(zip_path, progress)
-			if err != "":
-				return {"ok": false, "error": err, "extracted": extracted, "archives": left}
-			extracted += 1
-		for archive in archives:
-			_report(progress, 0, 0, "Extracting %s" % archive.get_file())
-			if _extract_archive(archive, tools):
+		for path: String in found:
+			if path.get_extension().to_lower() == "zip":
+				var err := _extract_zip(path, progress)
+				if err != "":
+					return {"ok": false, "error": err, "extracted": extracted, "archives": left}
+				extracted += 1
+				continue
+			if extractors == null:
+				extractors = available_extractors()
+			_report(progress, 0, 0, "Extracting %s" % path.get_file())
+			if _extract_archive(path, extractors):
 				extracted += 1
 			else:
-				left.append(archive)
+				left.append(path)
 	if not left.is_empty():
 		Log.warning("Could not extract %s (extractors found: %s)" % [", ".join(PackedStringArray(left)),
-			", ".join(PackedStringArray(tools.map(func(tool: Dictionary) -> String: return tool.name))) if not tools.is_empty() else "none"])
+			", ".join(PackedStringArray(extractors.map(func(tool: Dictionary) -> String: return tool.name))) if not extractors.is_empty() else "none"])
 	return {"ok": true, "error": "", "extracted": extracted, "archives": left}
 
 
@@ -362,8 +363,9 @@ static func available_extractors(os_name := OS.get_name(), path_env := OS.get_en
 	var found: Array = []
 	if os_name == "Windows":
 		return found
+	var dirs := path_env.split(":", false)
 	for tool in EXTRACTORS:
-		for dir in path_env.split(":", false):
+		for dir in dirs:
 			var path := dir.path_join(tool.name)
 			if FileAccess.file_exists(path):
 				found.append({"name": tool.name, "path": path, "args": tool.args})
@@ -411,17 +413,11 @@ static func _remove_links(dir: String) -> void:
 			_remove_links(dir.path_join(sub))
 
 
-## What to tell the user about the archives [param names] left unextracted:
-## [param tools] are the extractors that were found (and failed).
-static func archive_warning(names: Array, tools: Array, os_name: String, target_res_dir: String) -> String:
-	var files := ", ".join(PackedStringArray(names))
-	var todo := "Extract it yourself and copy the model into %s." % target_res_dir
-	if os_name == "Windows":
-		return "The model is probably inside %s, and GodotFab can't extract .rar or .7z archives on Windows. %s" % [files, todo]
-	if tools.is_empty():
-		return "The model is probably inside %s. No extractor was found on this system: install unar, unrar or bsdtar and download again, or extract it yourself and copy the model into %s." % [files, target_res_dir]
-	return "The model is probably inside %s, and %s could not extract it (it may lack RAR support). Install unar, unrar or bsdtar and download again, or extract it yourself and copy the model into %s." % [
-		files, ", ".join(PackedStringArray(tools)), target_res_dir]
+## What to tell the user about the archives [param names] left unextracted.
+static func archive_warning(names: Array, target_res_dir: String, os_name := OS.get_name()) -> String:
+	var why := "GodotFab can't extract .rar or .7z archives on Windows. Extract it yourself" if os_name == "Windows" \
+		else "no tool able to open it was found. Install unar, unrar or bsdtar and download again, or extract it yourself"
+	return "%s was not extracted (the model may be inside it): %s and copy its files into %s." % [", ".join(PackedStringArray(names)), why, target_res_dir]
 
 
 static func _extract_zip(zip_path: String, progress := Callable()) -> String:

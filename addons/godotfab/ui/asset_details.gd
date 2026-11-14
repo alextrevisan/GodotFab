@@ -136,7 +136,7 @@ func setup(new_gallery: Node) -> void:
 	_archive_folder = LinkButton.new()
 	_archive_folder.underline = LinkButton.UNDERLINE_MODE_ALWAYS
 	_archive_folder.tooltip_text = "Opens the folder in the file manager"
-	_archive_folder.pressed.connect(func(): OS.shell_open(_archive_folder.get_meta("folder", "")))
+	_archive_folder.pressed.connect(func(): OS.shell_show_in_file_manager(gallery.jobs.archives_dir(str(listing.get("uid", "")))))
 	_archive_box.add_child(_archive_folder)
 
 	_error_box = VBoxContainer.new()
@@ -582,10 +582,8 @@ func _update_action() -> void:
 	_archive_box.visible = not archives.is_empty()
 	if _archive_box.visible:
 		var target := str(job.get("target", "res://" + str(downloaded.get("folder", ""))))
-		_archive_label.text = Jobs.archive_warning(archives, target)
-		var folder: String = gallery.jobs.archives_dir(uid)
-		_archive_folder.text = "Downloaded to: %s" % folder
-		_archive_folder.set_meta("folder", folder)
+		_archive_label.text = GodotImport.archive_warning(archives, target)
+		_archive_folder.text = "Downloaded to: %s" % gallery.jobs.archives_dir(uid)
 	if not state in Jobs.ACTIVE:
 		var kept: int = gallery.jobs.downloads_size(uid)
 		_delete_downloads.visible = kept > 0

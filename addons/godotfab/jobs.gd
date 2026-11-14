@@ -280,6 +280,7 @@ func _download_and_import(uid: String, builds: Array) -> void:
 	if job.cancelled:
 		return
 	_set_state(uid, State.DOWNLOADING)
+	_remove_dir(archives_dir(uid))
 	var files_dirs: Array = []
 	var extra_dirs: Array = []
 	var all_files: Array = []
@@ -333,17 +334,7 @@ func _finish(uid: String) -> void:
 	if job.cancelled or job.state != State.IMPORTING:
 		return
 	_set_state(uid, State.DONE)
-	if keep_downloads:
-		_keep_only_chunks(job.staging)
-	elif DirAccess.dir_exists_absolute(job.staging.path_join(ARCHIVES_DIR)):
-		# Only the archives the user has to extract by hand stay.
-		for sub in DirAccess.get_directories_at(job.staging):
-			if sub != ARCHIVES_DIR:
-				_remove_dir(job.staging.path_join(sub))
-		for file in DirAccess.get_files_at(job.staging):
-			DirAccess.remove_absolute(job.staging.path_join(file))
-	else:
-		_remove_dir(job.staging)
+	_clean_staging(job.staging, keep_downloads)
 	job_finished.emit(uid, true)
 
 
@@ -364,15 +355,18 @@ func delete_downloads(uid: String) -> bool:
 	return not DirAccess.dir_exists_absolute(dir)
 
 
-## Keeps the chunk cache of each build (dl*/chunks): files/ was moved into the
-## Unreal project or copied into the Godot project, and export/ was imported.
-static func _keep_only_chunks(staging: String) -> void:
+## Empties a finished job's staging folder: files/ was moved into the Unreal
+## project or copied into the Godot project, and export/ was imported. The
+## archives the user has to extract by hand stay, and with [param keep_chunks]
+## the chunk cache of each build (dl*/chunks) too.
+static func _clean_staging(staging: String, keep_chunks: bool) -> void:
 	var dir := DirAccess.open(staging)
 	if dir == null:
 		return
+	dir.include_hidden = true
 	for sub in dir.get_directories():
 		var path := staging.path_join(sub)
-		if sub.begins_with("dl"):
+		if keep_chunks and sub.begins_with("dl"):
 			for inner in DirAccess.get_directories_at(path):
 				if inner != "chunks":
 					_remove_dir(path.path_join(inner))
@@ -382,6 +376,8 @@ static func _keep_only_chunks(staging: String) -> void:
 			_remove_dir(path)
 	for file in dir.get_files():
 		DirAccess.remove_absolute(staging.path_join(file))
+	# Gone as well when nothing was kept (a folder with content stays).
+	DirAccess.remove_absolute(staging)
 
 
 static func _dir_size(path: String) -> int:
@@ -602,7 +598,6 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 		_fail(uid, "This asset has no %s files" % job.format)
 		return
 	_set_state(uid, State.EXTRACTING)
-	_remove_dir(job.staging.path_join(ARCHIVES_DIR))
 	# The .rar / .7z files nothing here could extract.
 	var archives: Array = []
 	for files_dir in files_dirs + extra_dirs:
@@ -623,38 +618,27 @@ func _direct_path(uid: String, files_dirs: Array, extra_dirs: Array = []) -> voi
 	if job.cancelled:
 		return
 	if not archives.is_empty():
-		_keep_archives(job, archives, target)
+		_keep_archives(job, archives)
 	if not imported.ok:
-		_fail(uid, imported.error + (" " + job.warning if job.warning != "" else ""))
+		_fail(uid, imported.error)
 		return
 	job.scene = imported.scene
 
 
-## Moves the archives the job couldn't extract to `<staging>/archives`, where
-## they outlive the cleanup, and sets the job's warning: the user extracts
-## them by hand.
-func _keep_archives(job: Dictionary, archives: Array, target: String) -> void:
-	var dir: String = job.staging.path_join(ARCHIVES_DIR)
+## Moves the archives the job couldn't extract to `archives_dir(uid)`, where
+## they outlive the cleanup: the user extracts them by hand, and the asset's
+## details warn about them (`unextracted_archives`).
+func _keep_archives(job: Dictionary, archives: Array) -> void:
+	var dir := archives_dir(job.uid)
 	DirAccess.make_dir_recursive_absolute(dir)
-	var names: Array = []
-	for archive in archives:
-		var name: String = str(archive).get_file()
+	for archive: String in archives:
+		var name := archive.get_file()
 		var n := 2
 		while FileAccess.file_exists(dir.path_join(name)):
-			name = "%s_%d.%s" % [str(archive).get_file().get_basename(), n, str(archive).get_extension()]
+			name = "%s_%d.%s" % [archive.get_file().get_basename(), n, archive.get_extension()]
 			n += 1
-		if DirAccess.rename_absolute(str(archive), dir.path_join(name)) == OK:
-			names.append(name)
-	if names.is_empty():
-		return
-	job.warning = archive_warning(names, target)
-	Log.warning("%s: %s Download folder: %s" % [job.title, job.warning, dir])
-
-
-## The warning about [param names], archives left unextracted, for this system.
-static func archive_warning(names: Array, target: String) -> String:
-	var tools: Array = GodotImport.available_extractors().map(func(tool: Dictionary) -> String: return tool.name)
-	return GodotImport.archive_warning(names, tools, OS.get_name(), target)
+		DirAccess.rename_absolute(archive, dir.path_join(name))
+	Log.warning("%s: archives left unextracted, kept in %s" % [job.title, dir])
 
 
 ## Folder holding the archives of [param uid] that couldn't be extracted.
@@ -665,13 +649,8 @@ func archives_dir(uid: String) -> String:
 ## File names of the archives (.rar, .7z) the download of [param uid] left
 ## unextracted; they stay in `archives_dir(uid)` until the downloads are deleted.
 func unextracted_archives(uid: String) -> Array:
-	var names: Array = []
-	if uid.is_empty() or not DirAccess.dir_exists_absolute(archives_dir(uid)):
-		return names
-	var files := DirAccess.get_files_at(archives_dir(uid))
-	files.sort()
-	names.assign(files)
-	return names
+	var dir := archives_dir(uid)
+	return Array(DirAccess.get_files_at(dir)) if DirAccess.dir_exists_absolute(dir) else []
 
 
 ## Runs [param work] on a background thread so the editor stays responsive
@@ -750,7 +729,7 @@ func _new_job(uid: String, listing: Dictionary, format: String, scene_pref: Stri
 		"uid": uid, "title": str(listing.get("title", uid)), "listing": listing, "format": format,
 		"scene_pref": scene_pref, "engine_version": engine_version, "state": State.QUEUED, "progress": 0.0, "message": "", "error": "",
 		"log_tail": "", "scene": "", "maps": [], "content_folders": [], "target": "", "started_at": Time.get_unix_time_from_system(),
-		"cancelled": false, "staging": staging_root.path_join(uid), "needs_web": false, "installed": false, "warning": "",
+		"cancelled": false, "staging": staging_root.path_join(uid), "needs_web": false, "installed": false,
 	}
 	return _jobs[uid]
 

@@ -560,28 +560,21 @@ func test_direct_path_keeps_archives_it_could_not_extract() -> void:
 	var job := jobs.get_job("uid-1")
 	assert_eq(job.state, Jobs.State.DONE, job.error)
 	assert_eq(jobs.unextracted_archives("uid-1"), ["Chair.rar"])
+	assert_eq(jobs.unextracted_archives("missing"), [])
 	assert_true(FileAccess.file_exists(jobs.archives_dir("uid-1").path_join("Chair.rar")), "kept after the cleanup")
 	assert_false(DirAccess.dir_exists_absolute(job.staging.path_join("dl0")), "the rest of the download is gone")
-	assert_contains(job.warning, "Chair.rar")
-	# Downloading again starts clean.
+	# Downloading again starts clean, and nothing kept leaves no folder.
 	jobs.importer.leave_archive = ""
 	jobs.start(LISTING, "fbx")
 	await _wait_finished(jobs, "uid-1")
 	assert_eq(jobs.unextracted_archives("uid-1"), [])
-	assert_eq(jobs.get_job("uid-1").warning, "")
-	jobs.queue_free()
-
-
-func test_kept_chunks_survive_next_to_archives() -> void:
-	var api := _api_with_library()
-	api.direct_url = "https://cdn/files/x?sig=1"
-	var jobs := _jobs(api)
+	assert_false(DirAccess.dir_exists_absolute(job.staging), "nothing kept: no staging folder")
+	# Kept next to the chunk cache too, until the downloads are deleted.
 	jobs.keep_downloads = true
 	jobs.importer.leave_archive = "Chair.rar"
 	jobs.start(LISTING, "fbx")
 	await _wait_finished(jobs, "uid-1")
 	assert_eq(jobs.unextracted_archives("uid-1"), ["Chair.rar"])
-	assert_eq(jobs.unextracted_archives("missing"), [])
 	assert_true(jobs.delete_downloads("uid-1"))
 	assert_eq(jobs.unextracted_archives("uid-1"), [], "deleting the downloads clears the warning")
 	jobs.queue_free()
