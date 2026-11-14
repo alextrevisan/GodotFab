@@ -284,11 +284,13 @@ func _download_and_import(uid: String, builds: Array) -> void:
 	var files_dirs: Array = []
 	var extra_dirs: Array = []
 	var all_files: Array = []
+	var spans := _progress_spans(builds)
 	for i in builds.size():
 		var build: Dictionary = builds[i]
 		var staging: String = job.staging.path_join("dl%d" % i)
+		var span: Array = spans[i]
 		if build.has("download_url"):
-			var direct: Dictionary = await _download_direct(uid, build, staging, i, builds.size())
+			var direct: Dictionary = await _download_direct(uid, build, staging, span)
 			if job.cancelled:
 				return
 			if not direct.ok:
@@ -301,9 +303,8 @@ func _download_and_import(uid: String, builds: Array) -> void:
 			continue
 		var downloader = downloader_factory.call(build.manifest, build.base_urls, staging, api.fetch_bytes, parallel_chunks)
 		_downloaders[uid] = downloader
-		var base_progress := float(i) / builds.size()
 		downloader.progress.connect(func(done: int, total: int, bytes_done: int, bytes_total: int):
-			job.progress = base_progress + (float(done) / maxf(1.0, total)) / builds.size()
+			job.progress = lerpf(span[0], span[1], float(done) / maxf(1.0, total))
 			job.message = "%d / %d chunks (%s)" % [done, total, _mb(bytes_done, bytes_total)]
 			_emit(uid))
 		if downloader.has_signal("assembling"):
@@ -447,6 +448,7 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 				continue
 			var info: Dictionary = await api.file_download_info(uid, job.format, str(file.get("uid", "")))
 			info["file_name"] = str(file.get("name", ""))
+			info["size"] = int(file.get("size", 0))
 			pointer_sets.append(info)
 		# Textures often ship apart, as the listing's additional files (a textures.zip next
 		# to a bare FBX). A listing without them answers not ok: nothing to add.
@@ -459,6 +461,7 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 					continue
 				var info: Dictionary = await api.file_download_info(uid, FabApi.ADDITIONAL_FORMAT, str(file.get("uid", "")))
 				info["file_name"] = str(file.get("name", ""))
+				info["size"] = int(file.get("size", 0))
 				info["extra"] = true
 				pointer_sets.append(info)
 	var builds: Array = []
@@ -476,7 +479,7 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 			_fail(uid, pointers.error)
 			return []
 		if not str(pointers.get("download_url", "")).is_empty():
-			builds.append({"download_url": pointers.download_url, "file_name": _direct_file_name(pointers), "extra": pointers.get("extra", false)})
+			builds.append({"download_url": pointers.download_url, "file_name": _direct_file_name(pointers), "extra": pointers.get("extra", false), "size": pointers.get("size", 0)})
 			continue
 		var fetched := await _fetch_manifest(pointers.sources)
 		if not fetched.ok:
@@ -489,17 +492,42 @@ func _collect_builds(uid: String, item: Dictionary) -> Array:
 	return builds
 
 
+## The part of a job's download bar each of [param builds] takes, as
+## [from, to] pairs: by size when every build tells its own (the files of a
+## direct format), evenly otherwise.
+static func _progress_spans(builds: Array) -> Array:
+	var sizes: Array = builds.map(func(build: Dictionary) -> int: return maxi(0, int(build.get("size", 0))))
+	var total: int = sizes.reduce(func(sum: int, size: int) -> int: return sum + size, 0)
+	var spans: Array = []
+	var at := 0.0
+	for size in sizes:
+		var share: float = 1.0 / builds.size() if sizes.has(0) else float(size) / total
+		spans.append([at, at + share])
+		at += share
+	return spans
+
+
 ## Downloads a single-file build (a signed URL, no manifest) into
-## `<staging>/files/`; {ok, error, files_dir}.
-func _download_direct(uid: String, build: Dictionary, staging: String, index: int, count: int) -> Dictionary:
+## `<staging>/files/`; {ok, error, files_dir}. The job's progress moves inside
+## [param span] ([from, to]) as the bytes arrive.
+func _download_direct(uid: String, build: Dictionary, staging: String, span: Array) -> Dictionary:
 	var job: Dictionary = _jobs[uid]
 	var files_dir := staging.path_join("files")
 	_remove_dir(files_dir)
 	DirAccess.make_dir_recursive_absolute(files_dir)
-	job.progress = float(index) / count
+	job.progress = span[0]
 	job.message = "Downloading %s…" % build.file_name
 	_emit(uid)
-	var response: Dictionary = await api.download_file(build.download_url, files_dir.path_join(build.file_name))
+	var on_progress := func(downloaded: int, total: int) -> void:
+		if job.cancelled:
+			return
+		# The size the server tells, else the one the listing gave.
+		var size: int = total if total > 0 else int(build.get("size", 0))
+		if size > 0:
+			job.progress = lerpf(span[0], span[1], clampf(float(downloaded) / size, 0.0, 1.0))
+		job.message = "Downloading %s (%s)" % [build.file_name, _mb(downloaded, size)]
+		_emit(uid)
+	var response: Dictionary = await api.download_file(build.download_url, files_dir.path_join(build.file_name), 3600.0, on_progress)
 	if not response.ok:
 		return {"ok": false, "error": "Could not download %s: %s" % [build.file_name, response.error], "files_dir": files_dir}
 	return {"ok": true, "error": "", "files_dir": files_dir}

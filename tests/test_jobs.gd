@@ -578,3 +578,34 @@ func test_direct_path_keeps_archives_it_could_not_extract() -> void:
 	assert_true(jobs.delete_downloads("uid-1"))
 	assert_eq(jobs.unextracted_archives("uid-1"), [], "deleting the downloads clears the warning")
 	jobs.queue_free()
+
+
+func test_progress_spans() -> void:
+	assert_eq(Jobs._progress_spans([{"size": 100}, {"size": 300}]), [[0.0, 0.25], [0.25, 1.0]], "shares by size")
+	assert_eq(Jobs._progress_spans([{"size": 100}, {}]), [[0.0, 0.5], [0.5, 1.0]], "a size unknown: even shares")
+	assert_eq(Jobs._progress_spans([]), [])
+
+
+func test_direct_download_reports_progress() -> void:
+	var api := _api_with_library()
+	api.direct_url = "https://cdn/files/x?sig=1"
+	api.format_files = [{"uid": "f1", "name": "small.zip", "status": "ready", "size": 1048576},
+		{"uid": "f2", "name": "big.zip", "status": "ready", "size": 3 * 1048576}]
+	# The first report without the server's size, the second with it.
+	api.download_progress = [[524288, -1], [1048576, 2097152]]
+	var jobs := _jobs(api)
+	var seen: Array = []
+	jobs.job_changed.connect(func(uid: String):
+		var job: Dictionary = jobs.get_job(uid)
+		if job.state == Jobs.State.DOWNLOADING:
+			seen.append([job.message, job.progress]))
+	jobs.start(LISTING, "fbx")
+	await _wait_finished(jobs, "uid-1")
+	assert_eq(jobs.get_job("uid-1").state, Jobs.State.DONE, jobs.get_job("uid-1").error)
+	var has := func(message: String, progress: float) -> bool:
+		return seen.any(func(s): return s[0] == message and is_equal_approx(s[1], progress))
+	# The bar is shared by size (1 MB of 4, then 3 MB of 4) and moves inside each share.
+	assert_true(has.call("Downloading small.zip (0.5 / 1.0 MB)", 0.125), "listing size when the server tells none: %s" % str(seen))
+	assert_true(has.call("Downloading small.zip (1.0 / 2.0 MB)", 0.125), "the server's size when it tells one")
+	assert_true(has.call("Downloading big.zip (0.5 / 3.0 MB)", 0.375), str(seen))
+	jobs.queue_free()

@@ -64,9 +64,16 @@ class FakeApi extends RefCounted:
 		return {"ok": true, "error": "", "unauthorized": false, "build_version": "1",
 			"sources": [{"manifest_url": "https://cdn/m?sig", "base_url": "https://cdn"}]}
 
-	func download_file(url: String, path: String, _timeout := 3600.0) -> Dictionary:
+	## [downloaded, total] byte counts every download reports before it ends
+	## (total -1: the server doesn't tell the size).
+	var download_progress: Array = []
+
+	func download_file(url: String, path: String, _timeout := 3600.0, progress := Callable()) -> Dictionary:
 		calls.append(["download_file", url, path])
 		await Engine.get_main_loop().process_frame
+		for step in download_progress:
+			progress.call(step[0], step[1])
+			await Engine.get_main_loop().process_frame
 		if download_ok:
 			var f := FileAccess.open(path, FileAccess.WRITE)
 			f.store_string("zip")

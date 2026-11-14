@@ -356,3 +356,15 @@ func test_listing_format_versions() -> void:
 	assert_true(result.ok)
 	assert_eq(result.versions.size(), 1)
 	assert_eq(result.versions[0].artifactId, "art")
+
+
+func test_download_file_passes_the_progress_callback() -> void:
+	var pair := _api()
+	var api: FabApi = pair[0]
+	pair[1].add("cdn.example", {"status": 200})
+	var progress := func(_done: int, _total: int) -> void: pass
+	var result = await api.download_file("https://cdn.example/f.zip?sig=1", "/tmp/x/f.zip", 3600.0, progress)
+	assert_true(result.ok)
+	var req: Dictionary = pair[1].requests[0]
+	assert_eq(req.download_file, "/tmp/x/f.zip")
+	assert_eq(req.progress, progress)

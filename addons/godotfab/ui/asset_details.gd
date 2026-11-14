@@ -54,6 +54,7 @@ var _archive_label: Label
 var _archive_folder: LinkButton
 var _delete_confirm: ConfirmationDialog
 var _status: Label
+var _progress: ProgressBar
 var _error_box: VBoxContainer
 var _error_label: Label
 var _log: RichTextLabel
@@ -172,6 +173,12 @@ func setup(new_gallery: Node) -> void:
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	content.add_child(_status)
+	# The running job's progress (the card in the gallery shows the same).
+	_progress = ProgressBar.new()
+	_progress.max_value = 1.0
+	_progress.step = 0.001
+	_progress.visible = false
+	content.add_child(_progress)
 	# Wraps on narrow screens instead of widening the dialog.
 	var footer := HFlowContainer.new()
 	footer.add_theme_constant_override("h_separation", int(8 * edscale))
@@ -524,6 +531,8 @@ func _update_action() -> void:
 	_action.disabled = false
 	_action.icon = null
 	_format.disabled = state in Jobs.ACTIVE
+	_progress.visible = state in Jobs.ACTIVE
+	_progress.value = float(job.get("progress", 0.0))
 	var downloaded: Dictionary = gallery.downloaded_entry(uid)
 	var logged_in: bool = gallery.auth.is_logged_in()
 	for connection in _secondary.pressed.get_connections():
