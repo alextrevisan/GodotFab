@@ -220,6 +220,40 @@ func test_import_direct_keeps_every_model_and_the_textures_next_to_it() -> void:
 		assert_true(FileAccess.file_exists(target.path_join("Rock_%s/Textures/T_Rock_%s_A.tga" % [n, n])), "textures %s" % n)
 
 
+func test_import_direct_drops_texture_copies_away_from_the_model() -> void:
+	# Fab's "Chair" (Max3d): source/Chair.zip holds chair.fbx + textures/, and the
+	# same textures come again in a textures/ folder next to source/.
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	write_file(files.path_join("source/Chair_extracted/Chair/chair.fbx"), "fbx")
+	for map in ["Albedo", "Normal"]:
+		write_file(files.path_join("source/Chair_extracted/Chair/textures/chair_%s.png" % map), "png " + map)
+		# Fab re-encodes its copy: same name, other bytes.
+		write_file(files.path_join("textures/chair_%s.png" % map), "png, palette " + map)
+	# A texture the model's folder doesn't have stays.
+	write_file(files.path_join("textures/chair_AO.png"), "ao")
+	var target := root.path_join("fab_assets/chair")
+	var res := GodotImport.import_direct(files, "res://fab_assets/chair", {}, target)
+	assert_true(res.ok, res.get("error", ""))
+	assert_true(FileAccess.file_exists(target.path_join("source/Chair_extracted/Chair/textures/chair_Albedo.png")), "the copy next to the model stays")
+	assert_false(FileAccess.file_exists(target.path_join("textures/chair_Albedo.png")), "the copy away from it goes")
+	assert_false(FileAccess.file_exists(target.path_join("textures/chair_Normal.png")))
+	assert_true(FileAccess.file_exists(target.path_join("textures/chair_AO.png")))
+
+
+func test_import_direct_without_other_textures_drops_the_wrapper_folders() -> void:
+	var root := tmp_dir()
+	var files := root.path_join("files")
+	write_file(files.path_join("source/Chair_extracted/Chair/chair.fbx"), "fbx")
+	write_file(files.path_join("source/Chair_extracted/Chair/textures/chair_Albedo.png"), "png")
+	write_file(files.path_join("textures/chair_Albedo.png"), "png")
+	var target := root.path_join("fab_assets/chair")
+	var res := GodotImport.import_direct(files, "res://fab_assets/chair", {}, target)
+	assert_eq(res.scene, "res://fab_assets/chair/chair.fbx")
+	assert_true(FileAccess.file_exists(target.path_join("textures/chair_Albedo.png")))
+	assert_false(DirAccess.dir_exists_absolute(target.path_join("source")))
+
+
 func test_import_direct_presets_textures_for_3d() -> void:
 	# Without a preset Godot imports each texture for 2D, sees it used in 3D
 	# and reimports it, nested in the scene's import ("Task 'reimport' already exists").

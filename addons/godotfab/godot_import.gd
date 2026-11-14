@@ -485,14 +485,15 @@ static func import_direct(files_dir: String, target_res_dir: String, meta: Dicti
 	if not DirAccess.dir_exists_absolute(src):
 		return _fail("Files folder not found: %s" % src)
 	var target := _target_abs_of(target_res_dir, target_abs)
-	var root := _content_root(src)
+	var skip := _texture_copies(src)
+	var root := _content_root(src, skip)
 	var count := [0]
 	var on_file := func(file: String) -> void:
 		count[0] += 1
 		_report(progress, count[0], 0, "Copying %s" % file)
 	return _replace_target(target, func() -> Dictionary:
 		var copied: Array[String] = []
-		var err := _copy_assets(root, target, "", copied, on_file)
+		var err := _copy_assets(root, target, "", copied, on_file, skip)
 		if err != "":
 			return _fail(err)
 		for extra in extras:
@@ -557,9 +558,9 @@ static func texture_import_preset(file: String) -> String:
 ## folders (`<zip>_extracted/<Pack>/`) are dropped, while a pack laid out as
 ## `Rock_01/Meshes/*.fbx` + `Rock_01/Textures/*.tga` keeps all of it. `src`
 ## itself when there is no asset.
-static func _content_root(src: String) -> String:
+static func _content_root(src: String, skip: Dictionary = {}) -> String:
 	var dirs: Array[String] = []
-	_asset_dirs(src, dirs)
+	_asset_dirs(src, dirs, skip)
 	if dirs.is_empty():
 		return src
 	var common := dirs[0]
@@ -569,14 +570,54 @@ static func _content_root(src: String) -> String:
 	return common if (common + "/").begins_with(src + "/") else src
 
 
-static func _asset_dirs(dir: String, out: Array[String]) -> void:
+static func _asset_dirs(dir: String, out: Array[String], skip: Dictionary = {}) -> void:
 	for file in DirAccess.get_files_at(dir):
 		var ext := file.get_extension().to_lower()
-		if ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS:
+		if (ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS) and not skip.has(dir.path_join(file)):
 			out.append(dir)
 			break
 	for sub in DirAccess.get_directories_at(dir):
-		_asset_dirs(dir.path_join(sub), out)
+		_asset_dirs(dir.path_join(sub), out, skip)
+
+
+## The textures under `src` that only repeat one shipped with a model, as a
+## set {absolute path: true}: named like a texture in a model's folder (or
+## below it), while they sit outside every model's folder. Fab zips often
+## carry `source/<pack>.zip` (model + textures) and the same `textures/`
+## again next to it, re-encoded by Fab (so the bytes differ). Textures inside
+## a model's folder always stay: that model references them.
+static func _texture_copies(src: String) -> Dictionary:
+	var model_dirs: Array[String] = []
+	var textures: Array[String] = []
+	_models_and_textures(src, model_dirs, textures)
+	var inside := {}
+	var outside: Array[String] = []
+	for path in textures:
+		var near := false
+		for dir in model_dirs:
+			if (path.get_base_dir() + "/").begins_with(dir + "/"):
+				near = true
+				break
+		if not near:
+			outside.append(path)
+			continue
+		inside[path.get_file().to_lower()] = true
+	var out := {}
+	for path in outside:
+		if inside.has(path.get_file().to_lower()):
+			out[path] = true
+	return out
+
+
+static func _models_and_textures(dir: String, model_dirs: Array[String], textures: Array[String]) -> void:
+	for file in DirAccess.get_files_at(dir):
+		var ext := file.get_extension().to_lower()
+		if ext in SCENE_EXTENSIONS and not dir in model_dirs:
+			model_dirs.append(dir)
+		elif ext in TEXTURE_EXTENSIONS:
+			textures.append(dir.path_join(file))
+	for sub in DirAccess.get_directories_at(dir):
+		_models_and_textures(dir.path_join(sub), model_dirs, textures)
 
 
 ## Copies the assets of an additional-files folder into [param dst]: an
@@ -606,7 +647,7 @@ static func _copy_extras(src: String, dst: String, on_file := Callable()) -> Str
 	return ""
 
 
-static func _copy_assets(src: String, dst: String, relative: String, copied: Array[String], on_file := Callable()) -> String:
+static func _copy_assets(src: String, dst: String, relative: String, copied: Array[String], on_file := Callable(), skip: Dictionary = {}) -> String:
 	var src_dir := src.path_join(relative) if relative != "" else src
 	var d := DirAccess.open(src_dir)
 	if d == null:
@@ -614,7 +655,7 @@ static func _copy_assets(src: String, dst: String, relative: String, copied: Arr
 	var dst_dir := dst.path_join(relative) if relative != "" else dst
 	for file in _sorted_files(src_dir):
 		var ext := file.get_extension().to_lower()
-		if not (ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS):
+		if not (ext in MODEL_EXTENSIONS or ext in TEXTURE_EXTENSIONS) or skip.has(src_dir.path_join(file)):
 			continue
 		var err := DirAccess.make_dir_recursive_absolute(dst_dir)
 		if err != OK:
@@ -628,7 +669,7 @@ static func _copy_assets(src: String, dst: String, relative: String, copied: Arr
 	var subs := d.get_directories()
 	subs.sort()
 	for sub in subs:
-		var sub_err := _copy_assets(src, dst, relative.path_join(sub) if relative != "" else sub, copied, on_file)
+		var sub_err := _copy_assets(src, dst, relative.path_join(sub) if relative != "" else sub, copied, on_file, skip)
 		if sub_err != "":
 			return sub_err
 	return ""
