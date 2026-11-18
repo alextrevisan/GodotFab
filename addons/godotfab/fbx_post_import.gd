@@ -9,10 +9,16 @@ extends EditorScenePostImportPlugin
 ## the Advanced Import Settings: the strength of its normal map, and reading
 ## the normal map in DirectX convention (green down, Unreal's), which makes
 ## the material a shader.
+##
+## Meshes modelled on top of each other (any format) are separated before the
+## import builds on them (CoincidentSurfaces); the import option
+## "godotfab/separate_coincident_surfaces" turns it off per file.
 
 const FbxTextureFix = preload("res://addons/godotfab/fbx_texture_fix.gd")
+const CoincidentSurfaces = preload("res://addons/godotfab/coincident_surfaces.gd")
 const Log = preload("res://addons/godotfab/log.gd")
 const OPTION := "godotfab/fix_fbx_textures"
+const SEPARATE := "godotfab/separate_coincident_surfaces"
 const NORMAL_STRENGTH := "godotfab/normal_strength"
 const NORMAL_FLIP_Y := "godotfab/normal_flip_y"
 
@@ -24,6 +30,7 @@ var _source := ""
 
 func _get_import_options(path: String) -> void:
 	_source = path
+	add_import_option(SEPARATE, true)
 	if path.get_extension().to_lower() == "fbx":
 		add_import_option(OPTION, true)
 
@@ -35,6 +42,14 @@ func _get_internal_import_options(category: int) -> void:
 	if category == INTERNAL_IMPORT_CATEGORY_MATERIAL:
 		add_import_option_advanced(TYPE_FLOAT, NORMAL_STRENGTH, 1.0, PROPERTY_HINT_RANGE, "0,4,0.01")
 		add_import_option(NORMAL_FLIP_Y, false)
+
+
+func _pre_process(scene: Node) -> void:
+	if not get_option_value(SEPARATE):
+		return
+	var separated := CoincidentSurfaces.separate(scene)
+	if separated > 0:
+		Log.info("Scene import: %s, %d mesh(es) lying on another separated" % [_source.get_file(), separated])
 
 
 func _post_process(scene: Node) -> void:
